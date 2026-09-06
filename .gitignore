@@ -1,0 +1,15 @@
+# build artifacts
+web/dist/
+web/node_modules/
+server/internal/webui/dist/*
+!server/internal/webui/dist/.gitkeep
+server/game24-server
+
+# runtime data
+server/data/
+*.db
+*.db-shm
+*.db-wal
+
+# env
+.env

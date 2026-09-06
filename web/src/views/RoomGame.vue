@@ -1,0 +1,263 @@
+<script setup>
+import { computed, onMounted, onUnmounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useI18n } from '../i18n/index.js'
+import { useRoom } from '../composables/useRoom.js'
+import { sfx } from '../audio.js'
+import { shake, danger, haptic } from '../fx.js'
+import GameBoard from '../components/GameBoard.vue'
+import StepHistory from '../components/StepHistory.vue'
+import PlayersRail from '../components/PlayersRail.vue'
+import RoundSummary from '../components/RoundSummary.vue'
+import FinalPodium from '../components/FinalPodium.vue'
+import Countdown from '../components/Countdown.vue'
+import Icon from '../components/Icon.vue'
+import ModeBadge from '../components/ModeBadge.vue'
+import PlayerChip from '../components/PlayerChip.vue'
+import { burst } from '../confetti.js'
+import { getPlayer } from '../auth.js'
+
+const { t } = useI18n()
+const route = useRoute()
+const router = useRouter()
+const room = useRoom()
+const {
+  state, you, players, config, roundNo, totalRounds,
+  numbers, remaining, timeLimit, hand, roundResult, matchResult, hint, intro,
+  wrongFlash, error, isHost, combo,
+} = room
+
+const myWins = computed(() => players.value.find((p) => p.id === you.value)?.wins ?? 0)
+const myHints = computed(() => players.value.find((p) => p.id === you.value)?.hintsLeft ?? 0)
+const myRegens = computed(() => players.value.find((p) => p.id === you.value)?.regensLeft ?? 0)
+const urgent = computed(() => remaining.value <= 10 && state.value === 'round')
+const mood = computed(() => {
+  if (state.value === 'summary' && roundResult.value?.winner === you.value) return 'happy'
+  if (state.value === 'summary') return 'dizzy'
+  if (hand.value && hand.value.steps.length > 0) return 'thinking'
+  return 'idle'
+})
+const timePct = computed(() =>
+  timeLimit.value > 0 ? Math.max(0, Math.min(100, (remaining.value / timeLimit.value) * 100)) : 0
+)
+watch(urgent, (u) => danger(u && state.value === 'round' ? 0.85 : 0))
+watch(state, (s) => { if (s !== 'round') danger(0) })
+
+const celebrated = new Set()
+let celebrateIv = null
+
+// celebrate once per new round result won by me
+function watchish() {
+  let lastRound = 0
+  celebrateIv = setInterval(() => {
+    if (roundResult.value?.winner === you.value && roundNo.value !== lastRound) {
+      lastRound = roundNo.value
+      burst()
+      haptic([0, 40, 60, 40])
+    }
+    if (state.value === 'finished') clearInterval(celebrateIv)
+  }, 300)
+}
+watchish()
+
+// final local merge that isn't 24 → juicy failure
+watch(
+  () => hand.value?.cards.length,
+  (nv, ov) => {
+    if (state.value !== 'round') return
+    if (nv === 1 && ov === 2 && hand.value && !hand.value.won) {
+      shake(1.2)
+      sfx.wrong()
+      haptic([0, 60, 40, 60])
+    }
+  }
+)
+
+onMounted(() => {
+  room.open(route.params.code, route.query.hostKey || '')
+})
+onUnmounted(() => {
+  clearInterval(celebrateIv)
+  danger(0)
+  room.leave()
+})
+
+function backHome() {
+  router.push('/')
+}
+function copyLink() {
+  navigator.clipboard?.writeText(location.href)
+}
+
+const mmss = computed(() =>
+  `${Math.floor(remaining.value / 60)}:${String(remaining.value % 60).padStart(2, '0')}`
+)
+</script>
+
+<template>
+  <main class="wrap room">
+    <header class="top">
+      <button class="btn back" @click="backHome">
+        <Icon name="back" :size="18" /><span class="back-label">{{ t('exit') }}</span>
+      </button>
+      <ModeBadge
+        v-if="config"
+        :mode="config.mode"
+        :round="`${t('round')} ${roundNo}/${totalRounds || config.rounds}`"
+      />
+      <span class="chip code">#{{ room.code.value }}</span>
+      <div class="spacer" />
+      <span class="who panel"><PlayerChip compact /></span>
+      <button class="btn" @click="copyLink"><Icon name="link" :size="17" />{{ t('share') }}</button>
+    </header>
+
+    <div v-if="state === 'round'" class="clock" :class="{ urgent }">
+      <Icon name="clock" :size="17" />
+      <span class="mmss num">{{ mmss }}</span>
+      <span class="track"><span class="fill" :style="{ width: timePct + '%' }" /></span>
+    </div>
+
+    <p v-if="error" class="err chip">{{ error }}</p>
+
+    <div class="stage">
+      <div class="board-wrap" :class="{ flash: wrongFlash }">
+        <div v-if="state === 'lobby'" class="panel lobby">
+          <span class="section-title">#{{ room.code.value }}</span>
+          <h2>{{ t('waitingHost') }}</h2>
+          <PlayersRail :players="players" :you="you" />
+          <button v-if="isHost" class="btn primary big" @click="room.start">{{ t('startMatch') }}</button>
+        </div>
+
+        <GameBoard
+          v-else-if="state === 'round' && hand"
+          :hand="hand"
+          :disabled="intro"
+          :hint-data="hint"
+          :dealing="hand.cards.length === 4 && hand.cards.every((c) => c.id.startsWith('c')) && combo === 0 && hand.steps.length === 0"
+          @pick="room.pickCard"
+          @op="room.setOperator"
+        />
+        <div v-else-if="state === 'connecting'" class="loading">…</div>
+
+        <div class="actions">
+          <button class="btn" :disabled="state !== 'round' || intro || myHints <= 0" @click="room.askHint">
+            <Icon name="bulb" :size="17" />{{ t('hint') }}
+            <b v-if="myHints > 0" class="count num">{{ myHints }}</b>
+          </button>
+          <button class="btn" :disabled="state !== 'round' || intro" @click="room.undo">
+            <Icon name="undo" :size="17" />{{ t('undo') }}
+          </button>
+          <button class="btn" :disabled="state !== 'round' || intro || myRegens <= 0" @click="room.askRegen">
+            <Icon name="refresh" :size="17" />{{ t('regen') }}
+            <b v-if="myRegens > 0" class="count num">{{ myRegens }}</b>
+          </button>
+        </div>
+      </div>
+
+      <aside class="side">
+        <PlayersRail :players="players" :you="you" />
+        <StepHistory :history="hand?.history ?? []" />
+      </aside>
+    </div>
+
+    <Countdown v-if="intro && state === 'round'" @done="room.introDone" />
+    <RoundSummary :show="state === 'summary'" :result="roundResult" :round-no="roundNo" />
+    <FinalPodium :show="state === 'finished'" :standings="matchResult" @home="backHome" />
+  </main>
+</template>
+
+<style scoped>
+.room { display: flex; flex-direction: column; flex: 1 1 auto; gap: 14px; padding: 18px 0 26px; }
+.top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.back { padding: 12px 16px 12px 13px; gap: 7px; color: var(--text-dim); }
+@media (hover: hover) { .back:hover { color: var(--text); } }
+.code { font-variant-numeric: tabular-nums; letter-spacing: 0.06em; }
+.who { padding: 7px 14px 7px 7px; border-radius: var(--r-md); box-shadow: none; }
+.spacer { flex: 1; }
+.err { color: var(--bad); border-color: rgba(239, 95, 95, 0.4); align-self: flex-start; }
+
+.clock { display: flex; align-items: center; gap: 12px; color: var(--text-dim); transition: color 0.3s var(--ease); }
+.mmss { font-size: 1.05rem; font-weight: 600; color: var(--text); min-width: 3.4ch; }
+.track { flex: 1; height: 4px; border-radius: var(--r-full); background: var(--surface-2); overflow: hidden; }
+.fill {
+  display: block;
+  height: 100%;
+  border-radius: var(--r-full);
+  background: var(--accent);
+  transition: width 0.3s linear, background 0.3s var(--ease);
+}
+.clock.urgent, .clock.urgent .mmss { color: var(--bad); }
+.clock.urgent .fill { background: var(--bad); }
+
+.stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(230px, 24vw, 300px);
+  grid-template-areas:
+    'board side'
+    'quick side';
+  gap: 16px 20px;
+  flex: 1 1 auto;
+  align-content: center;
+  min-height: 0;
+}
+.board-wrap { grid-area: board; min-width: 0; display: flex; flex-direction: column; }
+.board-wrap.flash { animation: shake 0.3s var(--ease); }
+.lobby { display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 40px 26px; }
+.lobby h2 { font-size: 1.2rem; font-weight: 500; }
+.actions {
+  grid-area: quick;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-top: 16px;
+}
+.count {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-radius: var(--r-full);
+  min-width: 19px;
+  height: 19px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0 5px;
+}
+.side {
+  grid-area: side;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+.side :deep(.history) { flex: 1 1 auto; }
+.loading { text-align: center; color: var(--text-mute); font-size: 1.4rem; padding: 60px 0; }
+
+@media (max-width: 900px) {
+  .room { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+  .stage {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: 'board' 'side' 'quick';
+    gap: 12px;
+    flex: 0 0 auto;
+    align-content: start;
+  }
+  .side { align-self: auto; }
+  .actions {
+    position: fixed;
+    left: 12px;
+    right: 12px;
+    bottom: calc(12px + env(safe-area-inset-bottom));
+    z-index: 50;
+    margin-top: 0;
+  }
+}
+@media (max-width: 560px) {
+  .back-label { display: none; }
+  .back { padding: 0; width: 44px; justify-content: center; }
+}
+@media (max-width: 430px) {
+  .actions .btn { font-size: 0.85rem; padding-inline: 6px; gap: 5px; }
+}
+</style>
