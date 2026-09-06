@@ -16,6 +16,7 @@ import (
 	"github.com/pattaradol9/game24/server/internal/handler"
 	"github.com/pattaradol9/game24/server/internal/httpserver"
 	"github.com/pattaradol9/game24/server/internal/room"
+	"github.com/pattaradol9/game24/server/internal/secretmanager"
 	"github.com/pattaradol9/game24/server/internal/store"
 	"github.com/pattaradol9/game24/server/internal/webui"
 	"github.com/pattaradol9/game24/server/internal/ws"
@@ -24,25 +25,34 @@ import (
 func main() {
 	cfg := config.Load()
 
-	// 1. database (crypter attached afterwards: crypto needs the DB for the
-	// wrapped keyset, the DB needs crypto for PII).
+	// 1. resolve the encryption key. SECRETMANAGER_ENCRYPTION_KEY (a Google
+	// Secret Manager reference) takes priority and its fetched value
+	// overrides ENCRYPTION_KEY; local dev just sets ENCRYPTION_KEY. Either
+	// way we fail closed on a missing or malformed key.
+	encryptionKey := cfg.EncryptionKey
+	if cfg.SecretManagerEncryptionKey != "" {
+		fetched, err := secretmanager.Fetch(context.Background(), cfg.SecretManagerEncryptionKey)
+		if err != nil {
+			log.Fatalf("secretmanager (refusing to start): %v", err)
+		}
+		encryptionKey = fetched
+	}
+	cr, err := crypto.New(encryptionKey)
+	if err != nil {
+		log.Fatalf("crypto (refusing to start): %v", err)
+	}
+
+	// 2. database with the crypter attached (PII is encrypted before write).
 	if dir := filepath.Dir(cfg.DBPath); dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			log.Fatalf("mkdir db dir: %v", err)
 		}
 	}
-	db, err := store.Open(cfg.DBPath, nil)
+	db, err := store.Open(cfg.DBPath, cr)
 	if err != nil {
 		log.Fatalf("store: %v", err)
 	}
 	defer db.Close()
-
-	// 2. envelope encryption — one KMS call at startup, fail-closed.
-	cr, err := crypto.New(context.Background(), cfg.EncryptionMode, cfg.KMSKeyURI, cfg.CredentialsPath, storeAdapter{db})
-	if err != nil {
-		log.Fatalf("crypto (refusing to start): %v", err)
-	}
-	db.SetCrypter(cr)
 
 	// 3. multiplayer hub with EXP awarding for signed-in winners.
 	hub := room.NewHub(func(dbPlayerID string, mode game.Mode, points int64) {
@@ -58,6 +68,11 @@ func main() {
 	} else {
 		log.Printf("GOOGLE_OAUTH_CLIENT_ID not set: google sign-in disabled (guest play only)")
 	}
+	if len(cfg.AdminEmails) == 0 {
+		log.Printf("ADMIN_EMAILS not set: admin portal disabled (/api/v1/admin/* returns 404)")
+	} else {
+		log.Printf("admin portal enabled at /admin for %d allowlisted account(s) (API under /api/v1/admin)", len(cfg.AdminEmails))
+	}
 
 	api := &handler.API{
 		Store:  db,
@@ -70,7 +85,7 @@ func main() {
 	srv := httpserver.New(cfg, api, webui.FS())
 
 	go func() {
-		log.Printf("game24 server listening on :%s (mode=%s)", cfg.Port, cfg.EncryptionMode)
+		log.Printf("game24 server listening on :%s", cfg.Port)
 		if err := srv.Start(); err != nil {
 			log.Fatalf("server: %v", err)
 		}
@@ -86,13 +101,3 @@ func main() {
 		log.Printf("shutdown: %v", err)
 	}
 }
-
-// storeAdapter adapts *store.Store to crypto.BlobStore.
-type storeAdapter struct{ db *store.Store }
-
-func (a storeAdapter) Load() (string, []byte, error) { return a.db.LoadSystemKeys() }
-func (a storeAdapter) Save(uri string, blob []byte) error {
-	return a.db.SaveSystemKeys(uri, blob)
-}
-
-var _ crypto.BlobStore = storeAdapter{}

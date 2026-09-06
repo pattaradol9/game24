@@ -2,10 +2,10 @@ package handler
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -18,17 +18,6 @@ import (
 	"github.com/pattaradol9/game24/server/internal/store"
 )
 
-type memBlobs struct {
-	uri  string
-	blob []byte
-}
-
-func (m *memBlobs) Load() (string, []byte, error) { return m.uri, m.blob, nil }
-func (m *memBlobs) Save(uri string, blob []byte) error {
-	m.uri, m.blob = uri, blob
-	return nil
-}
-
 func newTestAPI(t *testing.T) (*API, *chi.Mux) {
 	t.Helper()
 	db, err := store.Open(filepath.Join(t.TempDir(), "test.db"), nil)
@@ -36,7 +25,7 @@ func newTestAPI(t *testing.T) (*API, *chi.Mux) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
-	cr, err := crypto.New(context.Background(), crypto.ModeLocal, "", "", &memBlobs{})
+	cr, err := crypto.New(strings.Repeat("ab", 32)) // valid 64-hex-char key
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +33,7 @@ func newTestAPI(t *testing.T) (*API, *chi.Mux) {
 	api := &API{
 		Store: db,
 		Hub:   room.NewHub(nil),
-		Cfg:   config.Config{Port: "0", EncryptionMode: "local"},
+		Cfg:   config.Config{Port: "0"},
 	}
 	r := chi.NewRouter()
 	r.Mount("/api/v1", api.Routes())

@@ -18,7 +18,7 @@ help:
 
 dev:
 	@echo "starting go API on :8080 and vite dev server on :5173 ..."
-	$(MAKE) -C server run &
+	cd server && go run ./cmd/server &
 	cd web && npm run dev
 
 # ---------- build ----------

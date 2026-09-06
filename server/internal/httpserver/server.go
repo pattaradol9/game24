@@ -33,7 +33,7 @@ func New(cfg config.Config, api *handler.API, webFS fs.FS) *Server {
 	r.Use(httprate.LimitByIP(200, time.Minute))
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   cfg.CORSOrigins,
-		AllowedMethods:   []string{"GET", "POST", "OPTIONS"},
+		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},
 		AllowedHeaders:   []string{"Authorization", "Content-Type"},
 		AllowCredentials: true,
 		MaxAge:           300,

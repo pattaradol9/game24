@@ -8,6 +8,7 @@ import (
 	"errors"
 	"math/rand/v2"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -60,6 +61,7 @@ type playerJSON struct {
 	Email     string                  `json:"email,omitempty"`
 	Picture   string                  `json:"picture,omitempty"`
 	IsGuest   bool                    `json:"isGuest"`
+	IsAdmin   bool                    `json:"isAdmin"`
 	TotalExp  int64                   `json:"totalExp"`
 	Level     int64                   `json:"level"`
 	LevelInto int64                   `json:"levelExpInto"`
@@ -69,12 +71,21 @@ type playerJSON struct {
 	PerMode   map[string]modeStatJSON `json:"perMode"`
 }
 
-func toPlayerJSON(p store.Player) playerJSON {
+// isAdminPlayer reports whether the player's Google email is on the
+// ADMIN_EMAILS allowlist (guests never are).
+func (a *API) isAdminPlayer(p store.Player) bool {
+	if p.IsGuest || p.Email == "" {
+		return false
+	}
+	return slices.Contains(a.Cfg.AdminEmails, strings.ToLower(strings.TrimSpace(p.Email)))
+}
+
+func (a *API) toPlayerJSON(p store.Player) playerJSON {
 	lv, into, next := progress.LevelProgress(p.TotalExp)
 	tier := progress.TierFromLevel(lv)
 	out := playerJSON{
 		ID: p.ID, Nickname: p.Nickname, Email: p.Email, Picture: p.Picture,
-		IsGuest: p.IsGuest, TotalExp: p.TotalExp,
+		IsGuest: p.IsGuest, IsAdmin: a.isAdminPlayer(p), TotalExp: p.TotalExp,
 		Level: lv, LevelInto: into, LevelNext: next,
 		Tier: progress.TierName(tier), TierBonus: progress.TierBonusQuota(tier),
 		PerMode: map[string]modeStatJSON{},
@@ -94,24 +105,28 @@ type ctxKey int
 
 const playerKey ctxKey = 1
 
-func (a *API) playerFrom(r *http.Request) (store.Player, bool) {
+func (a *API) playerFrom(r *http.Request) (store.Player, error) {
 	header := r.Header.Get("Authorization")
 	token := strings.TrimPrefix(header, "Bearer ")
 	if token == "" || token == header {
-		return store.Player{}, false
+		return store.Player{}, errors.New("no bearer token")
 	}
 	p, err := a.Store.PlayerByToken(token)
 	if err != nil {
-		return store.Player{}, false
+		return store.Player{}, err
 	}
-	return p, true
+	return p, nil
 }
 
 func requirePlayer(a *API) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			p, ok := a.playerFrom(r)
-			if !ok {
+			p, err := a.playerFrom(r)
+			if errors.Is(err, store.ErrBanned) {
+				fail(w, http.StatusForbidden, "account banned")
+				return
+			}
+			if err != nil {
 				fail(w, http.StatusUnauthorized, "sign in required")
 				return
 			}
@@ -120,11 +135,12 @@ func requirePlayer(a *API) func(http.Handler) http.Handler {
 	}
 }
 
-// optionalPlayer attaches the player when a valid token is present.
+// optionalPlayer attaches the player when a valid token is present. Banned
+// players are treated as anonymous (mutations still fail elsewhere).
 func optionalPlayer(a *API) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if p, ok := a.playerFrom(r); ok {
+			if p, err := a.playerFrom(r); err == nil {
 				r = r.WithContext(contextWithPlayer(r, p))
 			}
 			next.ServeHTTP(w, r)
@@ -170,6 +186,13 @@ func (a *API) Routes() chi.Router {
 		priv.Use(optionalPlayer(a))
 		priv.Post("/rooms", a.createRoom)
 	})
+
+	// admin portal — 404s entirely when the ADMIN_EMAILS allowlist is empty
+	// (fail closed)
+	r.Route("/admin", func(ar chi.Router) {
+		ar.Use(a.requireAdmin)
+		a.adminRoutes(ar)
+	})
 	return r
 }
 
@@ -191,7 +214,7 @@ func (a *API) createPlayer(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(w, map[string]any{"player": toPlayerJSON(p), "token": token})
+	ok(w, map[string]any{"player": a.toPlayerJSON(p), "token": token})
 }
 
 func (a *API) googleAuth(w http.ResponseWriter, r *http.Request) {
@@ -216,12 +239,12 @@ func (a *API) googleAuth(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(w, map[string]any{"player": toPlayerJSON(p), "token": token})
+	ok(w, map[string]any{"player": a.toPlayerJSON(p), "token": token})
 }
 
 func (a *API) me(w http.ResponseWriter, r *http.Request) {
 	p, _ := playerOf(r)
-	ok(w, map[string]any{"player": toPlayerJSON(p)})
+	ok(w, map[string]any{"player": a.toPlayerJSON(p)})
 }
 
 func (a *API) renameMe(w http.ResponseWriter, r *http.Request) {
@@ -238,7 +261,7 @@ func (a *API) renameMe(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "nickname required")
 		return
 	}
-	updated, err := a.Store.RenamePlayer(p.ID, name)
+	updated, err := a.Store.RenamePlayer("player:"+p.ID, p.ID, name)
 	if errors.Is(err, store.ErrNotFound) {
 		fail(w, http.StatusNotFound, "player not found")
 		return
@@ -247,7 +270,7 @@ func (a *API) renameMe(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(w, map[string]any{"player": toPlayerJSON(updated)})
+	ok(w, map[string]any{"player": a.toPlayerJSON(updated)})
 }
 
 func sanitizeName(s string) string {
@@ -362,7 +385,7 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 	ok(w, map[string]any{
 		"expr":    game.ExprFromSteps(round.Numbers, body.Steps),
 		"points":  points,
-		"player":  toPlayerJSON(fresh),
+		"player":  a.toPlayerJSON(fresh),
 		"levelUp": lvAfter > lvBefore,
 		"tierUp":  tierAfter != progress.TierFromLevel(lvBefore),
 	})
@@ -397,7 +420,7 @@ func (a *API) skipRound(w http.ResponseWriter, r *http.Request) {
 	fresh, _ := a.Store.PlayerByToken(bearerToken(r))
 	ok(w, map[string]any{
 		"solution": expr,
-		"player":   toPlayerJSON(fresh),
+		"player":   a.toPlayerJSON(fresh),
 	})
 }
 

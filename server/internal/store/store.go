@@ -1,11 +1,12 @@
-// Package store persists players, mode stats, rounds and the wrapped system
-// keyset in SQLite. All player PII is encrypted through the Crypter before
-// hitting the database; only gameplay statistics stay queryable.
+// Package store persists players, mode stats and rounds in SQLite. All
+// player PII is encrypted through the Crypter before hitting the database;
+// only gameplay statistics stay queryable.
 package store
 
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	_ "modernc.org/sqlite"
 )
@@ -41,8 +42,8 @@ func Open(path string, cr Crypter) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-// SetCrypter attaches the crypter after opening (crypto needs the store for
-// the system-keys blob, so the crypter is created after Open).
+// SetCrypter attaches the crypter after opening (useful when the crypter is
+// built later than the store, e.g. in tests).
 func (s *Store) SetCrypter(cr Crypter) { s.cr = cr }
 
 // TryUseHint atomically increments the hint counter of an open round and
@@ -57,11 +58,6 @@ func (s *Store) TryUseHint(roundID, playerID string) (int, error) {
 
 func (s *Store) migrate() error {
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS system_keys (
-			id      INTEGER PRIMARY KEY CHECK (id = 1),
-			key_uri TEXT NOT NULL DEFAULT '',
-			blob    BLOB NOT NULL
-		)`,
 		`CREATE TABLE IF NOT EXISTS players (
 			id           TEXT PRIMARY KEY,
 			token_hash   TEXT UNIQUE NOT NULL,
@@ -98,11 +94,37 @@ func (s *Store) migrate() error {
 			dealt_at    TEXT NOT NULL DEFAULT (datetime('now')),
 			finished_at TEXT
 		)`,
+		`CREATE TABLE IF NOT EXISTS event_logs (
+			id     TEXT PRIMARY KEY,
+			ts     TEXT NOT NULL DEFAULT (datetime('now')),
+			actor  TEXT NOT NULL,
+			action TEXT NOT NULL,
+			target TEXT NOT NULL DEFAULT '',
+			detail TEXT NOT NULL DEFAULT ''
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_pms_board ON player_mode_stats(mode, exp DESC, hands_solved DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_ts ON event_logs(ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_action ON event_logs(action, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_rounds_dealt ON rounds(dealt_at DESC)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
 			return fmt.Errorf("store: migrate: %w", err)
+		}
+	}
+	// Column additions for databases created before the admin portal: ALTER
+	// TABLE has no IF NOT EXISTS for columns, so ignore duplicate-column
+	// errors and fail on anything else.
+	alters := []string{
+		`ALTER TABLE players ADD COLUMN banned INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE players ADD COLUMN banned_at TEXT`,
+		`ALTER TABLE players ADD COLUMN ban_reason TEXT NOT NULL DEFAULT ''`,
+	}
+	for _, q := range alters {
+		if _, err := s.db.Exec(q); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("store: migrate: %w", err)
+			}
 		}
 	}
 	return nil

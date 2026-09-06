@@ -10,6 +10,10 @@ import (
 
 var ErrNotFound = errors.New("store: not found")
 
+// ErrBanned is returned when authenticating a banned player (token or Google
+// sign-in); banned players are locked out of every authenticated endpoint.
+var ErrBanned = errors.New("store: player banned")
+
 type ModeStat struct {
 	Exp           int64
 	HandsSolved   int64
@@ -19,13 +23,17 @@ type ModeStat struct {
 }
 
 type Player struct {
-	ID       string
-	Nickname string
-	Email    string
-	Picture  string
-	IsGuest  bool
-	TotalExp int64
-	Stats    map[string]ModeStat
+	ID        string
+	Nickname  string
+	Email     string
+	Picture   string
+	IsGuest   bool
+	Banned    bool
+	BanReason string
+	TotalExp  int64
+	CreatedAt time.Time
+	LastSeen  time.Time
+	Stats     map[string]ModeStat
 }
 
 func newToken() string { return randomID(32) }
@@ -46,6 +54,7 @@ func (s *Store) CreateGuest(nickname string) (Player, string, error) {
 	if err != nil {
 		return Player{}, "", fmt.Errorf("store: create guest: %w", err)
 	}
+	s.LogEvent("system", "player.create", id, `{"kind":"guest"}`)
 	p := Player{ID: id, Nickname: nickname, IsGuest: true, Stats: map[string]ModeStat{}}
 	return p, token, nil
 }
@@ -84,8 +93,12 @@ func (s *Store) GoogleLogin(sub, email, name, picture string) (Player, string, e
 	}
 	defer tx.Rollback()
 
-	var id string
-	err = tx.QueryRow(`SELECT id FROM players WHERE sub_hash = ?`, subHash).Scan(&id)
+	var (
+		id      string
+		banned  bool
+		existed bool
+	)
+	err = tx.QueryRow(`SELECT id, banned FROM players WHERE sub_hash = ?`, subHash).Scan(&id, &banned)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		id = randomID(16)
@@ -95,9 +108,16 @@ func (s *Store) GoogleLogin(sub, email, name, picture string) (Player, string, e
 			id, s.cr.HashToken(token), tokEnc, nickEnc, emailEnc, subHash, subEnc, picEnc); err != nil {
 			return Player{}, "", fmt.Errorf("store: create google player: %w", err)
 		}
+		if err = logEventTx(tx, "system", "player.create", id, `{"kind":"google"}`); err != nil {
+			return Player{}, "", err
+		}
 	case err != nil:
 		return Player{}, "", err
 	default:
+		existed = true
+		if banned {
+			return Player{}, "", ErrBanned
+		}
 		if _, err = tx.Exec(`UPDATE players SET token_hash=?, token_enc=?, nickname_enc=?, email_enc=?, picture_enc=?, last_seen_at=datetime('now') WHERE id=?`,
 			s.cr.HashToken(token), tokEnc, nickEnc, emailEnc, picEnc, id); err != nil {
 			return Player{}, "", err
@@ -106,6 +126,9 @@ func (s *Store) GoogleLogin(sub, email, name, picture string) (Player, string, e
 	if err = tx.Commit(); err != nil {
 		return Player{}, "", err
 	}
+	if existed {
+		s.LogEvent("system", "player.login.google", id, "")
+	}
 	p, err := s.PlayerByToken(token)
 	if err != nil {
 		return Player{}, "", err
@@ -113,22 +136,27 @@ func (s *Store) GoogleLogin(sub, email, name, picture string) (Player, string, e
 	return p, token, nil
 }
 
-const playerCols = `id, total_exp, is_guest, nickname_enc, email_enc, picture_enc`
+const playerCols = `id, total_exp, is_guest, nickname_enc, email_enc, picture_enc, banned, ban_reason, created_at, last_seen_at`
 
 func (s *Store) scanPlayer(row interface{ Scan(...any) error }) (Player, error) {
 	var (
 		p                 Player
-		guest             int
+		guest, banned     int
 		nickEnc, emailEnc string
 		picEnc            string
+		createdAt, seenAt string
 	)
-	if err := row.Scan(&p.ID, &p.TotalExp, &guest, &nickEnc, &emailEnc, &picEnc); err != nil {
+	if err := row.Scan(&p.ID, &p.TotalExp, &guest, &nickEnc, &emailEnc, &picEnc,
+		&banned, &p.BanReason, &createdAt, &seenAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return p, ErrNotFound
 		}
 		return p, err
 	}
 	p.IsGuest = guest == 1
+	p.Banned = banned == 1
+	p.CreatedAt = parseDBTime(createdAt)
+	p.LastSeen = parseDBTime(seenAt)
 	var err error
 	if p.Nickname, err = s.cr.Decrypt(nickEnc, "players.nickname"); err != nil {
 		return p, err
@@ -142,12 +170,26 @@ func (s *Store) scanPlayer(row interface{ Scan(...any) error }) (Player, error) 
 	return p, nil
 }
 
+// parseDBTime reads SQLite datetime('now') strings (UTC). A zero time is
+// returned for anything unparsable rather than failing the whole load.
+func parseDBTime(v string) time.Time {
+	t, err := time.Parse("2006-01-02 15:04:05", v)
+	if err != nil {
+		return time.Time{}
+	}
+	return t.UTC()
+}
+
 // PlayerByToken authenticates a session token (constant-work lookup by hash).
+// Banned players authenticate as ErrBanned regardless of token validity.
 func (s *Store) PlayerByToken(token string) (Player, error) {
 	row := s.db.QueryRow(`SELECT `+playerCols+` FROM players WHERE token_hash = ?`, s.cr.HashToken(token))
 	p, err := s.scanPlayer(row)
 	if err != nil {
 		return p, err
+	}
+	if p.Banned {
+		return p, ErrBanned
 	}
 	s.db.Exec(`UPDATE players SET last_seen_at = datetime('now') WHERE id = ?`, p.ID)
 	if p.Stats, err = s.ModeStats(p.ID); err != nil {
@@ -170,7 +212,9 @@ func (s *Store) PlayerByID(id string) (Player, error) {
 }
 
 // RenamePlayer updates a player's nickname (guests and Google players alike).
-func (s *Store) RenamePlayer(playerID, nickname string) (Player, error) {
+// actor records who performed the rename in the event log ("player:<id>" or
+// "admin").
+func (s *Store) RenamePlayer(actor, playerID, nickname string) (Player, error) {
 	nickEnc, err := s.cr.Encrypt(nickname, "players.nickname")
 	if err != nil {
 		return Player{}, err
@@ -182,6 +226,7 @@ func (s *Store) RenamePlayer(playerID, nickname string) (Player, error) {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return Player{}, ErrNotFound
 	}
+	s.LogEvent(actor, "player.rename", playerID, "")
 	return s.PlayerByID(playerID)
 }
 
@@ -264,14 +309,15 @@ type LeaderRow struct {
 	BestStreak  int64
 }
 
-// Leaderboard returns the ranked list for one mode; guests never appear.
+// Leaderboard returns the ranked list for one mode; guests and banned
+// players never appear.
 func (s *Store) Leaderboard(mode string, limit, offset int) ([]LeaderRow, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
 	rows, err := s.db.Query(`SELECT p.id, p.nickname_enc, p.picture_enc, m.exp, m.hands_solved, m.best_streak
 		FROM player_mode_stats m JOIN players p ON p.id = m.player_id
-		WHERE m.mode = ? AND p.is_guest = 0
+		WHERE m.mode = ? AND p.is_guest = 0 AND p.banned = 0
 		ORDER BY m.exp DESC, m.hands_solved DESC, m.best_streak DESC
 		LIMIT ? OFFSET ?`, mode, limit, offset)
 	if err != nil {
@@ -297,30 +343,6 @@ func (s *Store) Leaderboard(mode string, limit, offset int) ([]LeaderRow, error)
 		out = append(out, r)
 	}
 	return out, rows.Err()
-}
-
-// --- system_keys (implements crypto.BlobStore) ---
-
-func (s *Store) LoadSystemKeys() (string, []byte, error) {
-	var (
-		uri  string
-		blob []byte
-	)
-	err := s.db.QueryRow(`SELECT key_uri, blob FROM system_keys WHERE id = 1`).Scan(&uri, &blob)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil, nil
-	}
-	if err != nil {
-		return "", nil, err
-	}
-	return uri, blob, nil
-}
-
-func (s *Store) SaveSystemKeys(keyURI string, blob []byte) error {
-	_, err := s.db.Exec(`INSERT INTO system_keys (id, key_uri, blob) VALUES (1, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET key_uri = excluded.key_uri, blob = excluded.blob`,
-		keyURI, blob)
-	return err
 }
 
 // --- single-player rounds ---

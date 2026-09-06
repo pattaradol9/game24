@@ -1,222 +1,123 @@
-// Package crypto provides envelope encryption for player data:
-// a Tink keyset (DEK) wrapped by a remote KMS key (KEK, Google Cloud KMS).
-// The KMS is called only while unwrapping the keyset at service start;
-// the unwrapped keyset lives in memory until shutdown (fail-closed).
+// Package crypto encrypts player data with AES-256-GCM under a single
+// 32-byte secret key. The key is supplied through configuration and lives
+// entirely outside the service (recommended: Google Secret Manager, injected
+// as the ENCRYPTION_KEY environment variable); it is never written to the
+// database or logs. Lookup hashes are salted with a value derived from the
+// key, so the database alone reveals nothing useful.
 package crypto
 
 import (
-	"bytes"
-	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-
-	"github.com/google/tink/go/aead"
-	"github.com/google/tink/go/insecurecleartextkeyset"
-	"github.com/google/tink/go/integration/gcpkms"
-	"github.com/google/tink/go/keyset"
-	"github.com/google/tink/go/testing/fakekms"
-	"github.com/google/tink/go/tink"
+	"strings"
 )
 
 const (
-	ModeLocal = "local"
-	ModeKMS   = "kms"
+	keySize   = 32 // AES-256
+	nonceSize = 12 // 96-bit GCM nonce, standard length
+	tagSize   = 16 // GCM authentication tag
 
-	adSystemKeys = "system-keys/v1"
+	// versionAESGCM marks ciphertext sealed as version || nonce || ct+tag.
+	versionAESGCM = 1
+
+	// subHashInfo domain-separates the SubHash salt derivation from the
+	// encryption key: sha256(key || subHashInfo) is never used as an AES key.
+	subHashInfo = "game24/subhash-salt/v1"
 )
 
-// BlobStore persists the wrapped keyset envelope (system_keys table).
-type BlobStore interface {
-	// Load returns the persisted KMS key URI and wrapped blob, or empty
-	// values when nothing has been provisioned yet.
-	Load() (keyURI string, blob []byte, err error)
-	Save(keyURI string, blob []byte) error
-}
-
-// fakeClientAEAD resolves a persisted fake-KMS key URI after a restart.
-func fakeClientAEAD(keyURI string) (tink.AEAD, error) {
-	fc, err := fakekms.NewClient("fake-kms://")
-	if err != nil {
-		return nil, fmt.Errorf("crypto: fake kms: %w", err)
-	}
-	return fc.GetAEAD(keyURI)
-}
-
-type envelope struct {
-	Version int    `json:"v"`
-	Salt    string `json:"salt"`   // base64, used for keyed lookup hashes
-	Keyset  string `json:"keyset"` // base64, keyset wrapped by the KMS
-}
-
 type Crypter struct {
-	aead tink.AEAD
+	aead cipher.AEAD
 	salt []byte
 }
 
-// New unlocks or provisions the system keyset.
-//
-// mode "kms" uses Google Cloud KMS (kmsKeyURI must be a gcp-kms:// URI;
-// credentialsPath may be empty to fall back to Application Default
-// Credentials). mode "local" uses Tink's in-process fake KMS for
-// development and tests.
-func New(ctx context.Context, mode, kmsKeyURI, credentialsPath string, blobs BlobStore) (*Crypter, error) {
-	var (
-		remote    tink.AEAD
-		activeURI string
-	)
-	switch mode {
-	case ModeKMS:
-		if kmsKeyURI == "" {
-			return nil, fmt.Errorf("crypto: KMS mode requires a key URI")
-		}
-		var (
-			client interface {
-				GetAEAD(string) (tink.AEAD, error)
-			}
-			err error
-		)
-		if credentialsPath != "" {
-			client, err = gcpkms.NewClientWithCredentials("gcp-kms://", credentialsPath)
-		} else {
-			client, err = gcpkms.NewClient("gcp-kms://")
-		}
-		if err != nil {
-			return nil, fmt.Errorf("crypto: kms client: %w", err)
-		}
-		remote, err = client.GetAEAD(kmsKeyURI)
-		if err != nil {
-			return nil, fmt.Errorf("crypto: kms aead: %w", err)
-		}
-		activeURI = kmsKeyURI
-	case ModeLocal:
-		fc, err := fakekms.NewClient("fake-kms://")
-		if err != nil {
-			return nil, fmt.Errorf("crypto: fake kms: %w", err)
-		}
-		activeURI = kmsKeyURI
-		if activeURI == "" {
-			if activeURI, err = fakekms.NewKeyURI(); err != nil {
-				return nil, fmt.Errorf("crypto: fake key uri: %w", err)
-			}
-		}
-		if remote, err = fc.GetAEAD(activeURI); err != nil {
-			return nil, fmt.Errorf("crypto: fake kms aead: %w", err)
-		}
-	default:
-		return nil, fmt.Errorf("crypto: unknown encryption mode %q", mode)
+// New builds a Crypter from a 32-byte secret key encoded as base64 or hex.
+// It fails closed on a missing or malformed key so a misconfigured service
+// refuses to start instead of silently writing undecryptable data.
+func New(secret string) (*Crypter, error) {
+	key, err := parseKey(secret)
+	if err != nil {
+		return nil, err
 	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("crypto: init cipher: %w", err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, fmt.Errorf("crypto: init gcm: %w", err)
+	}
+	h := sha256.New()
+	h.Write(key)
+	h.Write([]byte(subHashInfo))
+	return &Crypter{aead: aead, salt: h.Sum(nil)}, nil
+}
 
-	template := aead.AES256GCMKeyTemplate()
-	envAEAD := aead.NewKMSEnvelopeAEAD2(template, remote)
-
-	storedURI, storedBlob, err := blobs.Load()
-	if err != nil {
-		return nil, fmt.Errorf("crypto: load system keys: %w", err)
+// parseKey decodes a 32-byte key from base64 (padded or not — the output of
+// `openssl rand -base64 32`) or hex (64 hex chars). Surrounding whitespace
+// from pasting or env files is tolerated.
+func parseKey(secret string) ([]byte, error) {
+	s := strings.TrimSpace(secret)
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil && len(b) == keySize {
+		return b, nil
 	}
-	if mode == ModeLocal && storedURI != "" {
-		activeURI = storedURI
-		if remote, err = fakeClientAEAD(activeURI); err != nil {
-			return nil, err
-		}
-		envAEAD = aead.NewKMSEnvelopeAEAD2(template, remote)
+	if b, err := base64.RawStdEncoding.DecodeString(s); err == nil && len(b) == keySize {
+		return b, nil
 	}
-
-	var salt []byte
-	if len(storedBlob) == 0 {
-		salt = make([]byte, 32)
-		if _, err := rand.Read(salt); err != nil {
-			return nil, fmt.Errorf("crypto: salt: %w", err)
-		}
-		handle, err := keyset.NewHandle(template)
-		if err != nil {
-			return nil, fmt.Errorf("crypto: keyset: %w", err)
-		}
-		var buf bytes.Buffer
-		if err := insecurecleartextkeyset.Write(handle, keyset.NewBinaryWriter(&buf)); err != nil {
-			return nil, fmt.Errorf("crypto: serialize keyset: %w", err)
-		}
-		wrapped, err := envAEAD.Encrypt(buf.Bytes(), []byte(adSystemKeys))
-		if err != nil {
-			return nil, fmt.Errorf("crypto: wrap keyset: %w", err)
-		}
-		envJSON, err := json.Marshal(envelope{Version: 1, Salt: base64.StdEncoding.EncodeToString(salt), Keyset: base64.StdEncoding.EncodeToString(wrapped)})
-		if err != nil {
-			return nil, fmt.Errorf("crypto: encode system keys: %w", err)
-		}
-		if err := blobs.Save(activeURI, envJSON); err != nil {
-			return nil, fmt.Errorf("crypto: save system keys: %w", err)
-		}
-		primitive, err := aead.New(handle)
-		if err != nil {
-			return nil, fmt.Errorf("crypto: primitive: %w", err)
-		}
-		return &Crypter{aead: primitive, salt: salt}, nil
+	if b, err := hex.DecodeString(s); err == nil && len(b) == keySize {
+		return b, nil
 	}
-
-	var env envelope
-	if err := json.Unmarshal(storedBlob, &env); err != nil {
-		return nil, fmt.Errorf("crypto: parse system keys: %w", err)
-	}
-	if env.Version != 1 {
-		return nil, fmt.Errorf("crypto: unsupported system keys version %d", env.Version)
-	}
-	salt, err = base64.StdEncoding.DecodeString(env.Salt)
-	if err != nil {
-		return nil, fmt.Errorf("crypto: salt: %w", err)
-	}
-	wrapped, err := base64.StdEncoding.DecodeString(env.Keyset)
-	if err != nil {
-		return nil, fmt.Errorf("crypto: keyset: %w", err)
-	}
-	cleartext, err := envAEAD.Decrypt(wrapped, []byte(adSystemKeys))
-	if err != nil {
-		// Fail closed: a broken KMS or tampered blob must not start.
-		return nil, fmt.Errorf("crypto: unwrap keyset (KMS unreachable or data tampered): %w", err)
-	}
-	handle, err := insecurecleartextkeyset.Read(keyset.NewBinaryReader(bytes.NewReader(cleartext)))
-	if err != nil {
-		return nil, fmt.Errorf("crypto: read keyset: %w", err)
-	}
-	primitive, err := aead.New(handle)
-	if err != nil {
-		return nil, fmt.Errorf("crypto: primitive: %w", err)
-	}
-	return &Crypter{aead: primitive, salt: salt}, nil
+	return nil, fmt.Errorf("crypto: ENCRYPTION_KEY must be a 32-byte key encoded as base64 or hex (generate one with: openssl rand -base64 32)")
 }
 
 // Encrypt seals plaintext for the given purpose (e.g. "players.email").
+// The purpose is bound as associated data, so ciphertexts cannot be swapped
+// between columns. Output: base64(version || nonce || ciphertext+tag).
 func (c *Crypter) Encrypt(plaintext, purpose string) (string, error) {
 	if plaintext == "" {
 		return "", nil
 	}
-	ct, err := c.aead.Encrypt([]byte(plaintext), []byte(purpose))
-	if err != nil {
-		return "", fmt.Errorf("crypto: encrypt %s: %w", purpose, err)
+	out := make([]byte, 0, 1+nonceSize+len(plaintext)+tagSize)
+	out = append(out, versionAESGCM)
+	nonce := make([]byte, nonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return "", fmt.Errorf("crypto: nonce: %w", err)
 	}
-	return base64.StdEncoding.EncodeToString(ct), nil
+	out = append(out, nonce...)
+	out = c.aead.Seal(out, nonce, []byte(plaintext), []byte(purpose))
+	return base64.StdEncoding.EncodeToString(out), nil
 }
 
-// Decrypt opens ciphertext previously sealed for the purpose.
+// Decrypt opens ciphertext previously sealed for the purpose. Any tampering
+// (including truncation or a wrong purpose) fails authentication.
 func (c *Crypter) Decrypt(ciphertext, purpose string) (string, error) {
 	if ciphertext == "" {
 		return "", nil
 	}
-	ct, err := base64.StdEncoding.DecodeString(ciphertext)
+	raw, err := base64.StdEncoding.DecodeString(ciphertext)
 	if err != nil {
 		return "", fmt.Errorf("crypto: decode %s: %w", purpose, err)
 	}
-	pt, err := c.aead.Decrypt(ct, []byte(purpose))
+	if len(raw) < 1+nonceSize+tagSize {
+		return "", fmt.Errorf("crypto: decrypt %s: ciphertext too short", purpose)
+	}
+	if raw[0] != versionAESGCM {
+		return "", fmt.Errorf("crypto: decrypt %s: unsupported ciphertext version %d", purpose, raw[0])
+	}
+	pt, err := c.aead.Open(nil, raw[1:1+nonceSize], raw[1+nonceSize:], []byte(purpose))
 	if err != nil {
 		return "", fmt.Errorf("crypto: decrypt %s: %w", purpose, err)
 	}
 	return string(pt), nil
 }
 
-// SubHash keys an identifier for lookup: sha256(salt || value).
+// SubHash keys an identifier for lookup: sha256(salt || value) with a salt
+// derived from the secret key, so it is stable across restarts but useless
+// to an attacker holding only the database.
 func (c *Crypter) SubHash(value string) string {
 	h := sha256.New()
 	h.Write(c.salt)

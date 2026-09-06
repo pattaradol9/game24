@@ -1,17 +1,20 @@
 package store
 
 import (
-	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pattaradol9/game24/server/internal/crypto"
 )
 
+// testKey is a valid 64-hex-char (32-byte) encryption key.
+var testKey = strings.Repeat("ab", 32)
+
 func openTest(t *testing.T) *Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.db")
-	cr, err := crypto.New(context.Background(), crypto.ModeLocal, "", "", &memBlobs{})
+	cr, err := crypto.New(testKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,17 +24,6 @@ func openTest(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
-}
-
-type memBlobs struct {
-	uri  string
-	blob []byte
-}
-
-func (m *memBlobs) Load() (string, []byte, error) { return m.uri, m.blob, nil }
-func (m *memBlobs) Save(uri string, blob []byte) error {
-	m.uri, m.blob = uri, blob
-	return nil
 }
 
 func TestGuestFlow(t *testing.T) {
@@ -126,20 +118,6 @@ func TestGoogleReloginRotatesToken(t *testing.T) {
 	}
 	if _, err := s.PlayerByToken(tok2); err != nil {
 		t.Fatalf("new token rejected: %v", err)
-	}
-}
-
-func TestSystemKeysPersist(t *testing.T) {
-	s := openTest(t)
-	if uri, blob, err := s.LoadSystemKeys(); err != nil || uri != "" || blob != nil {
-		t.Fatalf("empty store load = %q %v %v", uri, blob, err)
-	}
-	if err := s.SaveSystemKeys("fake-kms://x", []byte("blob")); err != nil {
-		t.Fatal(err)
-	}
-	uri, blob, err := s.LoadSystemKeys()
-	if err != nil || uri != "fake-kms://x" || string(blob) != "blob" {
-		t.Fatalf("load = %q %q %v", uri, blob, err)
 	}
 }
 

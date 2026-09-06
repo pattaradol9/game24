@@ -11,6 +11,7 @@ const router = createRouter({
     { path: '/solo', component: () => import('./views/SoloGame.vue') },
     { path: '/room/:code', component: () => import('./views/RoomGame.vue') },
     { path: '/leaderboard', component: () => import('./views/Leaderboard.vue') },
+    { path: '/admin', component: () => import('./views/Admin.vue') },
   ],
 })
 

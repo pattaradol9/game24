@@ -1,4 +1,6 @@
-# 24 Game — single static binary (web SPA embedded), SQLite + Tink envelope encryption
+# 24 Game — single static binary (web SPA embedded), SQLite + AES-256-GCM secret-key encryption
+# The encryption key is injected at runtime via ENCRYPTION_KEY (e.g. from
+# Google Secret Manager); it is never baked into the image.
 # Stage 1: build the Vue SPA
 FROM node:22-alpine AS web
 WORKDIR /src

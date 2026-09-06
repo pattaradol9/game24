@@ -80,6 +80,9 @@ function logout() {
         <button class="item" @click="showRename = true; open = false">
           <Icon name="edit" :size="16" />{{ t('profileRename') }}
         </button>
+        <button v-if="player.isAdmin" class="item admin-item" @click="open = false; $router.push('/admin')">
+          <Icon name="crown" :size="16" />{{ t('profileAdmin') }}
+        </button>
         <div v-if="player.isGuest" class="gsi-wrap">
           <GoogleSignIn @signed-in="open = false" />
         </div>
@@ -167,6 +170,8 @@ function logout() {
 @media (hover: hover) { .item:hover { background: var(--surface-3); } }
 .item.danger { color: var(--bad); border-color: rgba(239, 95, 95, 0.3); }
 @media (hover: hover) { .item.danger:hover { background: rgba(239, 95, 95, 0.12); } }
+.item.admin-item { color: var(--accent); border-color: rgba(246, 183, 60, 0.35); }
+@media (hover: hover) { .item.admin-item:hover { background: var(--accent-soft); } }
 .gsi-wrap { display: grid; place-items: center; }
 .err { color: var(--bad); font-size: 0.8rem; }
 .drop-enter-active { animation: rise-in 0.18s var(--ease); }
