@@ -7,6 +7,7 @@ import { sfx, toggleSound, soundEnabled } from '../audio.js'
 import Brand from '../components/Brand.vue'
 import Suit from '../components/Suit.vue'
 import Icon from '../components/Icon.vue'
+import ArrowText from '../components/ArrowText.vue'
 import ModeSelector from '../components/ModeSelector.vue'
 import LeaderboardView from '../components/LeaderboardView.vue'
 import NicknameModal from '../components/NicknameModal.vue'
@@ -79,7 +80,7 @@ function flipSound() {
     <section class="hero panel">
       <div class="pitch">
         <h1>{{ t('tagline') }}</h1>
-        <p class="howto">{{ t('howTo') }}</p>
+        <p class="howto"><ArrowText :text="t('howTo')" /></p>
         <div class="cta">
           <button class="btn primary big" @click="playSolo('queen')">{{ t('playNow') }}</button>
         </div>
@@ -128,7 +129,10 @@ function flipSound() {
       <div class="block panel">
         <div class="head">
           <h2 class="section-title">{{ t('leaderboard') }}</h2>
-          <RouterLink class="more" to="/leaderboard">{{ t('viewAll') }} →</RouterLink>
+          <RouterLink class="more" to="/leaderboard">
+            {{ t('viewAll') }}
+            <Icon name="arrow-right" :size="13" />
+          </RouterLink>
         </div>
         <LeaderboardView compact />
       </div>
@@ -214,12 +218,19 @@ function flipSound() {
 .hint { color: var(--text-mute); font-size: 0.88rem; line-height: 1.5; }
 .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .more {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 0.82rem;
   color: var(--accent);
   text-decoration: none;
   white-space: nowrap;
 }
-@media (hover: hover) { .more:hover { text-decoration: underline; } }
+.more svg { transition: transform 0.18s var(--ease); }
+@media (hover: hover) {
+  .more:hover { text-decoration: underline; }
+  .more:hover svg { transform: translateX(3px); }
+}
 .join { display: flex; gap: 10px; }
 .code {
   flex: 1;

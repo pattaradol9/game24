@@ -1,6 +1,6 @@
 <script setup>
 import { ref } from 'vue'
-import Icon from './Icon.vue'
+import AnimatedIcon from './AnimatedIcon.vue'
 import { useI18n } from '../i18n/index.js'
 import { api } from '../api.js'
 
@@ -36,6 +36,7 @@ async function create() {
 <template>
   <div class="overlay" @click.self="$emit('close')">
     <div class="panel modal">
+      <span class="hero-ic"><AnimatedIcon name="crown" :size="26" /></span>
       <h2>{{ t('createRoom') }}</h2>
       <label>{{ t('modes') }}</label>
       <select v-model="mode">
@@ -63,7 +64,7 @@ async function create() {
       <p class="note">{{ t('multiplayerBoardHint') }}</p>
       <p v-if="error" class="err">{{ error }}</p>
       <div class="actions">
-        <button class="btn icon" aria-label="close" @click="$emit('close')"><Icon name="close" :size="18" /></button>
+        <button class="btn icon" aria-label="close" @click="$emit('close')"><AnimatedIcon name="close" :size="18" /></button>
         <button class="btn primary big" :disabled="creating" @click="create">{{ t('createRoom') }}</button>
       </div>
     </div>
@@ -87,6 +88,19 @@ async function create() {
   gap: 12px;
   padding: 24px;
   animation: rise-in 0.22s var(--ease);
+}
+/* bobbing crown — hosting a room is claiming the crown */
+.hero-ic {
+  align-self: center;
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(246, 183, 60, 0.3);
+  box-shadow: 0 0 24px rgba(246, 183, 60, 0.12);
 }
 h2, h3 { font-size: 1.15rem; font-weight: 500; }
 label { font-size: 0.75rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-mute); margin-top: 6px; }

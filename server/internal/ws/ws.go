@@ -119,7 +119,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		c.CloseConn()
 		if sess != "" {
-			rm.Leave(sess)
+			rm.Leave(sess, c)
 		}
 	}()
 	raw.SetReadDeadline(time.Now().Add(pongWait))
@@ -138,8 +138,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			var jd struct {
-				Name  string `json:"name"`
-				Token string `json:"token"`
+				Name    string `json:"name"`
+				Token   string `json:"token"`
+				HostKey string `json:"hostKey"`
+				Resume  string `json:"resume"`
 			}
 			if err := json.Unmarshal(env.Data, &jd); err != nil {
 				h.reply(c, "error", map[string]any{"message": "bad join payload"})
@@ -150,7 +152,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				h.reply(c, "error", map[string]any{"message": "name required"})
 				continue
 			}
-			info := room.Info{SessionID: newSession(), Name: name}
+			info := room.Info{SessionID: newSession(), Name: name, HostKey: jd.HostKey, Resume: jd.Resume}
 			if jd.Token != "" {
 				if p, err := h.store.PlayerByToken(jd.Token); err == nil && !p.IsGuest {
 					lv := progress.LevelFromExp(p.TotalExp)
@@ -159,9 +161,30 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					info.Tier = progress.TierName(progress.TierFromLevel(lv))
 				}
 			}
-			sess = info.SessionID
-			rm.Join(info, c)
+			// the seat may be a resumed one — report its id, not the
+			// fresh session id, so the client's "you" stays consistent
+			sess = rm.Join(info, c)
 			h.reply(c, "joined", map[string]any{"sessionId": sess})
+		case "rename":
+			if sess == "" {
+				h.reply(c, "error", map[string]any{"message": "join first"})
+				continue
+			}
+			var rd struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(env.Data, &rd); err != nil {
+				h.reply(c, "error", map[string]any{"message": "bad rename payload"})
+				continue
+			}
+			name := trimName(rd.Name)
+			if name == "" {
+				h.reply(c, "error", map[string]any{"message": "name required"})
+				continue
+			}
+			if err := rm.Rename(sess, name); err != nil {
+				h.reply(c, "error", map[string]any{"message": err.Error()})
+			}
 		case "start":
 			if sess == "" {
 				h.reply(c, "error", map[string]any{"message": "join first"})

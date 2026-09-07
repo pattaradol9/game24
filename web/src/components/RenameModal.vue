@@ -1,9 +1,11 @@
 <script setup>
 // Small modal to change the player's nickname.
 import { ref } from 'vue'
-import Icon from './Icon.vue'
+import AnimatedIcon from './AnimatedIcon.vue'
 import { useI18n } from '../i18n/index.js'
 import { getPlayer, renamePlayer } from '../auth.js'
+import { randomName } from '../core/names.js'
+import { sfx } from '../audio.js'
 
 const { t } = useI18n()
 const emit = defineEmits(['saved', 'close'])
@@ -11,6 +13,11 @@ const emit = defineEmits(['saved', 'close'])
 const name = ref(getPlayer()?.nickname ?? '')
 const busy = ref(false)
 const error = ref('')
+
+function reroll() {
+  sfx.click()
+  name.value = randomName()
+}
 
 async function save() {
   if (busy.value) return
@@ -23,7 +30,7 @@ async function save() {
   error.value = ''
   try {
     await renamePlayer(trimmed)
-    emit('saved')
+    emit('saved', trimmed)
     emit('close')
   } catch (e) {
     error.value = e.message
@@ -36,17 +43,23 @@ async function save() {
 <template>
   <div class="overlay" @click.self="$emit('close')">
     <div class="panel">
+      <span class="hero-ic"><AnimatedIcon name="edit" :size="26" /></span>
       <h3>{{ t('profileRename') }}</h3>
-      <input
-        v-model="name"
-        class="name-input"
-        :placeholder="t('nicknamePlaceholder')"
-        maxlength="24"
-        @keyup.enter="save"
-      />
+      <div class="name-row">
+        <input
+          v-model="name"
+          class="name-input"
+          :placeholder="t('nicknamePlaceholder')"
+          maxlength="24"
+          @keyup.enter="save"
+        />
+        <button class="btn icon dice" :aria-label="t('randomName')" :title="t('randomName')" @click="reroll">
+          <AnimatedIcon name="dice" :size="19" />
+        </button>
+      </div>
       <p v-if="error" class="err">{{ error }}</p>
       <div class="actions">
-        <button class="btn icon" aria-label="close" @click="$emit('close')"><Icon name="close" :size="18" /></button>
+        <button class="btn icon" aria-label="close" @click="$emit('close')"><AnimatedIcon name="close" :size="18" /></button>
         <button class="btn primary" :disabled="busy" @click="save">{{ t('save') }}</button>
       </div>
     </div>
@@ -71,7 +84,23 @@ async function save() {
   padding: 24px;
   animation: rise-in 0.22s var(--ease);
 }
+/* animated pencil in a warm tile — the modal explains itself at a glance */
+.hero-ic {
+  align-self: center;
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(246, 183, 60, 0.3);
+  box-shadow: 0 0 24px rgba(246, 183, 60, 0.12);
+}
 h2, h3 { font-size: 1.15rem; font-weight: 500; }
+.name-row { display: flex; gap: 8px; }
+.name-row .name-input { flex: 1; min-width: 0; }
+.dice { flex: none; }
 label { font-size: 0.75rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-mute); margin-top: 6px; }
 select, .name-input {
   width: 100%;

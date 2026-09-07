@@ -1,5 +1,5 @@
 // Room websocket wrapper with auto-reconnect while the match is live.
-export function connectRoom(code, { name, token }, { onMessage, onOpen, onClose } = {}) {
+export function connectRoom(code, { name, token, hostKey, resume }, { onMessage, onOpen, onClose, onGiveUp } = {}) {
   let ws = null
   let closedByUs = false
   let retries = 0
@@ -9,7 +9,9 @@ export function connectRoom(code, { name, token }, { onMessage, onOpen, onClose 
     ws = new WebSocket(`${proto}://${location.host}/api/v1/ws/room/${code}`)
     ws.onopen = () => {
       retries = 0
-      send('join', { name, token })
+      // the resume secret reattaches this browser's old seat, so a
+      // refresh (or a mid-game socket retry) never forks the player
+      send('join', { name, token, hostKey, resume })
       onOpen?.()
     }
     ws.onmessage = (ev) => {
@@ -25,6 +27,8 @@ export function connectRoom(code, { name, token }, { onMessage, onOpen, onClose 
       if (retries < 5) {
         retries++
         setTimeout(connect, 800 * retries)
+      } else {
+        onGiveUp?.()
       }
     }
     ws.onerror = () => ws.close()

@@ -3,7 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { levelProgress } from '../core/progress.js'
 import { useI18n } from '../i18n/index.js'
 import XpBar from './XpBar.vue'
-import TierBadge from './TierBadge.vue'
+import TierAvatar from './TierAvatar.vue'
 import { sfx } from '../audio.js'
 import { haptic } from '../fx.js'
 
@@ -114,14 +114,15 @@ function reveal() {
       </p>
 
       <div v-if="player && !player.isGuest" class="progress">
+        <TierAvatar :tier="player.tier" :src="player.picture" :name="player.nickname" :size="46" />
         <XpBar
+          class="bar"
           instant
           :exp="expShown"
           :into="expProg.into"
           :for-next="expProg.forNext"
           :level="expProg.lv"
         />
-        <TierBadge :tier="player.tier" />
       </div>
       <p v-else-if="player" class="guest-note">{{ t('guestsNoExp') }}</p>
 
@@ -189,7 +190,8 @@ function reveal() {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.65; }
 }
-.progress { display: flex; flex-direction: column; align-items: stretch; gap: 12px; }
-.progress :deep(.tier) { align-self: center; }
+/* framed avatar states the tier; the bar tells you how far to the next one */
+.progress { display: flex; align-items: center; gap: 14px; }
+.progress .bar { flex: 1; width: auto; min-width: 0; }
 .guest-note { font-size: 0.8rem; color: var(--text-mute); }
 </style>

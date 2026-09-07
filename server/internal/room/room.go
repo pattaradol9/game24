@@ -24,6 +24,7 @@ type Info struct {
 	Level     int64
 	Tier      string
 	HostKey   string // matches the room secret to claim host
+	Resume    string // matches a seat's secret to reattach after a refresh
 }
 
 type player struct {
@@ -37,6 +38,9 @@ type player struct {
 	hintsLeft  int
 	regensLeft int
 	conn       Conn
+	absent     bool   // socket dropped; seat held warm through playerGrace
+	absentSeq  int    // bumped per absence so stale drop timers no-op
+	resumeKey  string // secret letting the same browser reattach this seat
 }
 
 type stateView struct {
@@ -59,6 +63,7 @@ type playerView struct {
 	HintsLeft  int    `json:"hintsLeft"`
 	RegensLeft int    `json:"regensLeft"`
 	Host       bool   `json:"host"`
+	Absent     bool   `json:"absent"` // socket dropped, seat held warm
 }
 
 type Room struct {
@@ -67,21 +72,25 @@ type Room struct {
 	award   AwardEXP
 	hostKey string
 
-	mu              sync.Mutex
-	players         map[string]*player
-	joinOrder       []string
-	hostID          string
-	state           string
-	roundNo         int
-	numbers         map[string][]int // session id -> active hand (shared or regenerated)
-	sharedNumbers   []int
-	deadline        time.Time
-	summaryDur      time.Duration
-	roundOver       bool
-	solvedBy        string
-	gen             int
-	rnd             *rand.Rand
-	removedCallback func(code string)
+	mu                   sync.Mutex
+	players              map[string]*player
+	joinOrder            []string
+	hostID               string
+	hostAbsentSince      time.Time // zero while the host seat is connected
+	state                string
+	roundNo              int
+	numbers              map[string][]int // session id -> active hand (shared or regenerated)
+	sharedNumbers        []int
+	deadline             time.Time
+	summaryDur           time.Duration
+	roundOver            bool
+	solvedBy             string
+	gen                  int
+	rnd                  *rand.Rand
+	removedCallback      func(code string)
+	repopulatedCallback  func(code string)
+	hostLostCallback     func(code string)
+	hostReturnedCallback func(code string)
 }
 
 const (
@@ -107,8 +116,31 @@ func newRoom(code, hostKey string, cfg Config, award AwardEXP) *Room {
 	}
 }
 
-// Attach removes hook so the hub can drop finished/empty rooms.
+// Attach hooks so the hub can drop finished/empty rooms and cancel the
+// pending removal when someone joins again.
 func (r *Room) OnEmpty(fn func(code string)) { r.removedCallback = fn }
+
+func (r *Room) OnRepopulated(fn func(code string)) {
+	if fn != nil {
+		r.repopulatedCallback = fn
+	}
+}
+
+// OnHostLost fires when the host disconnects while members remain; the
+// hub starts the reconnect grace, after which the room is closed.
+func (r *Room) OnHostLost(fn func(code string)) {
+	if fn != nil {
+		r.hostLostCallback = fn
+	}
+}
+
+// OnHostReturned fires when a join reclaims the host seat, so the hub can
+// abort a pending close.
+func (r *Room) OnHostReturned(fn func(code string)) {
+	if fn != nil {
+		r.hostReturnedCallback = fn
+	}
+}
 
 func (r *Room) Code() string { return r.code }
 
@@ -123,57 +155,222 @@ func (r *Room) PublicInfo() map[string]any {
 
 func cfgRounds(c Config) int { return c.Rounds }
 
-// Join registers a connection. Host is the first player.
-func (r *Room) Join(info Info, conn Conn) {
+// Join registers a connection. The host seat belongs to the hostKey
+// holder (the room creator) and is never handed to anyone else. A join
+// carrying a valid resume secret reattaches the caller's existing seat —
+// same id, score and quotas — so a page refresh never churns the room
+// for everyone else. Returns the seat id that now owns the connection:
+// the fresh session id, or the reattached seat's original one.
+func (r *Room) Join(info Info, conn Conn) string {
 	r.mu.Lock()
-	p := &player{
-		id: info.SessionID, name: info.Name, dbID: info.DBID,
-		level: info.Level, tier: info.Tier, conn: conn,
-		hintsLeft: r.cfg.HintQuota, regensLeft: r.cfg.RegenQuota,
+
+	// a resume secret identifies the returning browser's own seat
+	var p *player
+	if info.Resume != "" {
+		for _, q := range r.players {
+			if q.resumeKey == info.Resume {
+				p = q
+				break
+			}
+		}
 	}
-	r.players[p.id] = p
-	r.joinOrder = append(r.joinOrder, p.id)
-	if r.hostID == "" || (info.HostKey != "" && info.HostKey == r.hostKey) {
-		r.hostID = p.id
+
+	first := r.connectedLocked() == 0
+	isHostSeat := false
+	var staleConn Conn
+	if p != nil {
+		// reattach: fresh socket into the same seat, everything kept
+		staleConn = p.conn
+		p.conn = conn
+		p.absent = false
+		p.absentSeq++
+		p.name, p.dbID, p.level, p.tier = info.Name, info.DBID, info.Level, info.Tier
+		isHostSeat = p.id == r.hostID
+	} else {
+		p = &player{
+			id: info.SessionID, name: info.Name, dbID: info.DBID,
+			level: info.Level, tier: info.Tier, conn: conn,
+			hintsLeft: r.cfg.HintQuota, regensLeft: r.cfg.RegenQuota,
+			resumeKey: newSecret(24),
+		}
+		r.players[p.id] = p
+		r.joinOrder = append(r.joinOrder, p.id)
+		claimsHost := r.hostID == "" || (info.HostKey != "" && info.HostKey == r.hostKey)
+		if claimsHost {
+			// the host is back on a brand-new session: retire their
+			// lingering absent seat so no ghost chip stays behind
+			if old, ok := r.players[r.hostID]; ok && old.id != p.id && old.absent {
+				delete(r.players, old.id)
+				delete(r.numbers, old.id)
+				r.removeFromOrderLocked(old.id)
+			}
+			r.hostID = p.id
+			isHostSeat = true
+		}
 	}
-	// late joiner mid-match: hand them the shared hand
-	if r.state == StateRound && !r.roundOver && r.sharedNumbers != nil {
-		r.numbers[p.id] = r.sharedNumbers
+
+	welcome := map[string]any{"you": p.id, "resume": p.resumeKey, "state": r.snapshotLocked()}
+	// members surface the pending host countdown; the host seat itself
+	// must not — host_back already lifted it, and a stale deadline sent
+	// after it would re-open the wait dialog on the host's own screen
+	if !r.hostAbsentSince.IsZero() && !isHostSeat {
+		welcome["hostReconnecting"] = map[string]any{
+			"endsAt": r.hostAbsentSince.Add(hostGrace).UnixMilli(),
+		}
+	}
+	// (re)joining mid-match: hand over the live round data so a refresh
+	// lands back on a playable board — a privately regenerated hand is
+	// preserved when the seat survived the refresh
+	hand := r.numbers[p.id]
+	if r.state == StateRound && !r.roundOver && (hand != nil || r.sharedNumbers != nil) {
+		if hand == nil {
+			hand = r.sharedNumbers
+			r.numbers[p.id] = hand
+		}
+		welcome["round"] = map[string]any{
+			"roundNo":   r.roundNo,
+			"total":     r.cfg.Rounds,
+			"numbers":   hand,
+			"endsAt":    r.deadline.UnixMilli(),
+			"timeLimit": game.MustConfig(r.cfg.Mode).TimeLimitSec,
+		}
 	}
 	r.mu.Unlock()
+
+	if staleConn != nil {
+		staleConn.CloseConn()
+	}
+	if first && r.repopulatedCallback != nil {
+		r.repopulatedCallback(r.code)
+	}
+	if isHostSeat {
+		r.mu.Lock()
+		r.hostAbsentSince = time.Time{}
+		r.mu.Unlock()
+		if r.hostReturnedCallback != nil {
+			r.hostReturnedCallback(r.code)
+		}
+		if !first {
+			r.broadcast("host_back", nil)
+		}
+	}
 	r.sendState()
-	r.sendTo(p.id, "welcome", map[string]any{"you": p.id, "state": r.snapshotLocked()})
+	r.sendTo(p.id, "welcome", welcome)
+	return p.id
 }
 
-// Leave drops a player; host duties move down the join order.
-func (r *Room) Leave(sessionID string) {
+// Leave drops a connection. The seat stays warm through the reconnect
+// grace, flagged absent so the room shows "connecting…" on that player's
+// name only; dropAbsent reaps it if the player never returns. The host
+// seat is never reaped — the hub's host grace decides the room's fate.
+func (r *Room) Leave(sessionID string, conn Conn) {
 	r.mu.Lock()
 	p, ok := r.players[sessionID]
-	if !ok {
+	if !ok || p.absent || p.conn != conn {
+		// unknown seat, already absent, or a stale leave from a socket
+		// that lost the race against a resume reattach
 		r.mu.Unlock()
 		return
 	}
-	delete(r.players, sessionID)
-	delete(r.numbers, sessionID)
-	for i, id := range r.joinOrder {
-		if id == sessionID {
-			r.joinOrder = append(r.joinOrder[:i], r.joinOrder[i+1:]...)
-			break
-		}
+	p.absent = true
+	p.absentSeq++
+	p.conn = nil
+	seq := p.absentSeq
+	wasHost := r.hostID == sessionID
+	connected := r.connectedLocked()
+	var reconnectEndsAt int64
+	if wasHost && connected > 0 {
+		r.hostAbsentSince = time.Now()
+		reconnectEndsAt = r.hostAbsentSince.Add(hostGrace).UnixMilli()
 	}
-	p.conn.CloseConn()
-	if r.hostID == sessionID && len(r.joinOrder) > 0 {
-		r.hostID = r.joinOrder[0]
-	}
-	empty := len(r.players) == 0
 	r.mu.Unlock()
-	if empty {
+
+	time.AfterFunc(playerGrace, func() { r.dropAbsent(sessionID, seq) })
+
+	if connected == 0 {
+		// nobody is watching anymore; keep the room briefly for refreshes
 		if r.removedCallback != nil {
 			r.removedCallback(r.code)
 		}
 		return
 	}
+	if wasHost && r.hostLostCallback != nil {
+		r.hostLostCallback(r.code)
+	}
+	if reconnectEndsAt != 0 {
+		r.broadcast("host_reconnecting", map[string]any{"endsAt": reconnectEndsAt})
+	}
 	r.sendState()
+}
+
+// dropAbsent reaps a seat whose reconnect grace elapsed. The sequence
+// check makes timers from earlier absences — or a resume that already
+// landed — harmless no-ops.
+func (r *Room) dropAbsent(sessionID string, seq int) {
+	r.mu.Lock()
+	p, ok := r.players[sessionID]
+	if !ok || !p.absent || p.absentSeq != seq {
+		r.mu.Unlock()
+		return
+	}
+	if sessionID == r.hostID && r.connectedLocked() > 0 {
+		// while members remain the host seat stays put — the hub's host
+		// grace decides the room's fate instead
+		r.mu.Unlock()
+		return
+	}
+	delete(r.players, sessionID)
+	delete(r.numbers, sessionID)
+	r.removeFromOrderLocked(sessionID)
+	r.mu.Unlock()
+	r.sendState()
+}
+
+// connectedLocked counts seats with a live socket.
+func (r *Room) connectedLocked() int {
+	n := 0
+	for _, q := range r.players {
+		if !q.absent {
+			n++
+		}
+	}
+	return n
+}
+
+func (r *Room) removeFromOrderLocked(id string) {
+	for i, q := range r.joinOrder {
+		if q == id {
+			r.joinOrder = append(r.joinOrder[:i], r.joinOrder[i+1:]...)
+			return
+		}
+	}
+}
+
+// Shutdown notifies everyone still inside that the room is over (the host
+// is gone for good) and tears the connections down. The hub calls it once
+// the reconnect grace has elapsed.
+func (r *Room) Shutdown() {
+	r.mu.Lock()
+	conns := make([]Conn, 0, len(r.players))
+	for _, p := range r.players {
+		if p.conn != nil {
+			conns = append(conns, p.conn)
+		}
+	}
+	raw, _ := json.Marshal(map[string]any{
+		"type": "room_closed",
+		"data": map[string]any{"reason": "host left"},
+	})
+	for _, c := range conns {
+		c.Deliver(raw)
+	}
+	r.mu.Unlock()
+	// give the writer pumps a beat to flush the notice before cutting
+	time.AfterFunc(100*time.Millisecond, func() {
+		for _, c := range conns {
+			c.CloseConn()
+		}
+	})
 }
 
 // Start begins the match; only the host may call it.
@@ -334,6 +531,21 @@ func (r *Room) Submit(sessionID string, steps []game.Step) error {
 	return nil
 }
 
+// Rename updates a player's display name and rebroadcasts the state so
+// everyone in the room sees the new name without a rejoin.
+func (r *Room) Rename(sessionID, name string) error {
+	r.mu.Lock()
+	p, ok := r.players[sessionID]
+	if !ok {
+		r.mu.Unlock()
+		return fmt.Errorf("not in room")
+	}
+	p.name = name
+	r.mu.Unlock()
+	r.sendState()
+	return nil
+}
+
 // Hint spends a hint and privately reveals the opening move.
 func (r *Room) Hint(sessionID string) error {
 	r.mu.Lock()
@@ -423,13 +635,20 @@ func (r *Room) viewLocked(p *player) playerView {
 	return playerView{
 		ID: p.id, Name: p.name, Guest: p.dbID == "", Level: p.level, Tier: p.tier,
 		Score: p.score, Wins: p.wins, HintsLeft: p.hintsLeft, RegensLeft: p.regensLeft,
-		Host: p.id == r.hostID,
+		Host: p.id == r.hostID, Absent: p.absent,
 	}
 }
 
 func (r *Room) snapshotLocked() stateView {
 	players := make([]playerView, 0, len(r.players))
+	// the host is always listed first, everyone else by join order
+	if hp, ok := r.players[r.hostID]; ok {
+		players = append(players, r.viewLocked(hp))
+	}
 	for _, id := range r.joinOrder {
+		if id == r.hostID {
+			continue
+		}
 		if p, ok := r.players[id]; ok {
 			players = append(players, r.viewLocked(p))
 		}
@@ -455,7 +674,7 @@ func (r *Room) sendTo(sessionID, typ string, data any) {
 	r.mu.Lock()
 	p, ok := r.players[sessionID]
 	r.mu.Unlock()
-	if ok {
+	if ok && p.conn != nil {
 		p.conn.Deliver(raw)
 	}
 }
@@ -468,7 +687,9 @@ func (r *Room) broadcast(typ string, data any) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, p := range r.players {
-		p.conn.Deliver(raw)
+		if p.conn != nil {
+			p.conn.Deliver(raw)
+		}
 	}
 }
 

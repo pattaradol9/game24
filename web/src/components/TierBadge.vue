@@ -7,6 +7,9 @@ const props = defineProps({
 })
 
 const TIERS = {
+  // guests have no rank yet — the badge reads flat grey to match their
+  // plain frame everywhere else
+  guest: '#8a94a8',
   bronze: '#c07a3e',
   silver: '#a9b1c1',
   gold: '#f6b73c',
@@ -14,7 +17,7 @@ const TIERS = {
   diamond: '#78a8f5',
   master: '#b283f0',
 }
-const color = computed(() => TIERS[props.tier] ?? TIERS.bronze)
+const color = computed(() => TIERS[props.tier] ?? TIERS.guest)
 </script>
 
 <template>

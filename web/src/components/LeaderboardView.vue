@@ -2,9 +2,10 @@
 import { onMounted, ref, watch, computed } from 'vue'
 import { useI18n } from '../i18n/index.js'
 import { api } from '../api.js'
+import { playerIdentityVersion } from '../auth.js'
 import { MODES } from '../modes.js'
 import Suit from './Suit.vue'
-import TierBadge from './TierBadge.vue'
+import TierAvatar from './TierAvatar.vue'
 import CrownMark from './CrownMark.vue'
 
 const { t } = useI18n()
@@ -28,10 +29,12 @@ async function load() {
 
 onMounted(load)
 watch(mode, load)
+// a rename (or Google sign-in) from the header profile menu must show up
+// here without a page reload
+watch(playerIdentityVersion, load)
 defineExpose({ mode })
 
 const fmt = (n) => (n ?? 0).toLocaleString('en-US')
-const initial = (name) => (name || '?').slice(0, 1).toUpperCase()
 
 const top3 = computed(() => entries.value.slice(0, 3))
 // second place on the left, winner centre, third on the right
@@ -73,19 +76,16 @@ const rows = computed(() =>
         >
           <CrownMark v-if="e.rank === 1" :size="52" class="crown" />
           <span class="place">{{ e.rank }}</span>
-          <img v-if="e.picture" :src="e.picture" referrerpolicy="no-referrer" alt="" />
-          <span v-else class="avatar">{{ initial(e.nickname) }}</span>
+          <TierAvatar :tier="e.tier" :src="e.picture" :name="e.nickname" :size="46" />
           <b class="pname">{{ e.nickname }}</b>
           <span class="pexp num">{{ fmt(e.exp) }} EXP</span>
-          <TierBadge :tier="e.tier" size="sm" />
         </div>
       </div>
 
       <ol class="rows">
         <li v-for="e in rows" :key="e.playerId">
           <span class="rank num" :class="`r${e.rank}`">{{ e.rank }}</span>
-          <img v-if="e.picture" :src="e.picture" referrerpolicy="no-referrer" alt="" />
-          <span v-else class="avatar sm">{{ initial(e.nickname) }}</span>
+          <TierAvatar :tier="e.tier" :src="e.picture" :name="e.nickname" :size="32" />
           <span class="who">
             <b>{{ e.nickname }}</b>
             <span class="meta num">
@@ -94,7 +94,6 @@ const rows = computed(() =>
               <span v-if="e.bestStreak" class="streak"><i>·</i> {{ t('streak') }} {{ e.bestStreak }}</span>
             </span>
           </span>
-          <TierBadge :tier="e.tier" size="sm" class="tier" />
           <span class="exp num">{{ fmt(e.exp) }}</span>
         </li>
       </ol>
@@ -164,21 +163,6 @@ const rows = computed(() =>
   color: var(--text-mute);
 }
 .seat.lead .place { color: var(--accent); }
-.seat img, .avatar {
-  width: 46px;
-  height: 46px;
-  border-radius: var(--r-sm);
-  object-fit: cover;
-}
-.avatar {
-  display: grid;
-  place-items: center;
-  background: var(--surface-3);
-  color: var(--text-dim);
-  font-size: 1.15rem;
-  font-weight: 600;
-}
-.seat.lead .avatar { background: var(--accent); color: var(--accent-ink); }
 .pname {
   font-size: 0.92rem;
   font-weight: 500;
@@ -210,14 +194,10 @@ const rows = computed(() =>
   color: var(--text-mute);
 }
 .rank.r1, .rank.r2, .rank.r3 { color: var(--accent); }
-.avatar.sm { width: 32px; height: 32px; font-size: 0.88rem; border-radius: var(--r-xs); }
-.rows img { width: 32px; height: 32px; border-radius: var(--r-xs); object-fit: cover; flex: none; }
 .who { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .who b { font-size: 0.9rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meta { font-size: 0.74rem; color: var(--text-mute); white-space: nowrap; }
 .meta i { font-style: normal; opacity: 0.5; margin: 0 3px; }
-/* fixed column so the pills line up instead of ragging off the right */
-.tier { flex: none; width: 98px; justify-content: flex-start; }
 .exp { font-size: 0.95rem; font-weight: 600; color: var(--text); min-width: 68px; text-align: right; }
 
 @media (max-width: 560px) {
@@ -226,7 +206,6 @@ const rows = computed(() =>
   .seat.lead { padding-top: 30px; }
   .seat img, .avatar { width: 38px; height: 38px; }
   .pname { font-size: 0.82rem; }
-  .tier { display: none; }
   .streak { display: none; } /* keep the meta line to one row on phones */
   .exp { min-width: 56px; font-size: 0.88rem; }
 }

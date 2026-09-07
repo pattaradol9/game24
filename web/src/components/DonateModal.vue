@@ -3,7 +3,7 @@
 // disclaimer that keeps the donation legally one-way (no consideration).
 import { onMounted, onUnmounted } from 'vue'
 import { useI18n } from '../i18n/index.js'
-import Icon from './Icon.vue'
+import AnimatedIcon from './AnimatedIcon.vue'
 
 const { t } = useI18n()
 const emit = defineEmits(['close'])
@@ -19,8 +19,9 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   <div class="overlay" @click.self="emit('close')">
     <div class="panel modal" role="dialog" aria-modal="true" :aria-label="t('donateTitle')">
       <button class="btn icon close" :aria-label="t('close')" @click="emit('close')">
-        <Icon name="close" :size="18" />
+        <AnimatedIcon name="close" :size="18" />
       </button>
+      <span class="hero-ic"><AnimatedIcon name="heart" :size="26" /></span>
       <h2>{{ t('donateTitle') }}</h2>
       <p class="lead">{{ t('donateLead') }}</p>
       <div class="qr-wrap">
@@ -66,6 +67,19 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
   color: var(--text-mute);
 }
 @media (hover: hover) { .close:hover { color: var(--text); } }
+/* beating heart — a gift, not a sale */
+.hero-ic {
+  align-self: center;
+  width: 52px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  border-radius: 16px;
+  color: var(--bad);
+  background: rgba(239, 95, 95, 0.12);
+  border: 1px solid rgba(239, 95, 95, 0.3);
+  box-shadow: 0 0 24px rgba(239, 95, 95, 0.12);
+}
 h2 { font-size: 1.2rem; font-weight: 500; padding-right: 34px; }
 .lead { font-size: 0.86rem; color: var(--text-dim); line-height: 1.6; }
 .qr-wrap {

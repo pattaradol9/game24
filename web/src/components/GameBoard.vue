@@ -8,6 +8,7 @@ import { sfx } from '../audio.js'
 import { sparkle, popText, centerOf, cardEl, haptic } from '../fx.js'
 import CardTile from './CardTile.vue'
 import OperatorPad from './OperatorPad.vue'
+import ArrowText from './ArrowText.vue'
 import Icon from './Icon.vue'
 
 const props = defineProps({
@@ -117,7 +118,7 @@ watch(
       :disabled="!hand.selection || disabled"
       @update:model-value="(op) => emit('op', op)"
     />
-    <p class="tip">{{ t('selectCards') }}</p>
+    <p class="tip"><ArrowText :text="t('selectCards')" /></p>
     <Transition name="hint">
       <div v-if="hintData" :key="hintData.at ?? hintData.result" class="hint-pop chip">
         <div class="hint-row">

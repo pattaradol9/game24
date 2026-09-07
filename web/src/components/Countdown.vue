@@ -1,7 +1,7 @@
 <script setup>
 // Classic 3-2-1-GO round intro. Fires tick sounds, ends with a whoosh,
 // and completes instantly under prefers-reduced-motion.
-import { onMounted, ref } from 'vue'
+import { onMounted, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from '../i18n/index.js'
 import { sfx } from '../audio.js'
 import { haptic } from '../fx.js'
@@ -10,6 +10,7 @@ const emit = defineEmits(['done'])
 const { t } = useI18n()
 const step = ref(3) // 3, 2, 1, then GO
 const leaving = ref(false)
+let timers = []
 
 onMounted(() => {
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
@@ -24,8 +25,14 @@ onMounted(() => {
     [2500, () => { leaving.value = true }],
     [2900, () => emit('done')],
   ]
-  const timers = seq.map(([ms, fn]) => setTimeout(fn, ms))
-  return () => timers.forEach(clearTimeout)
+  timers = seq.map(([ms, fn]) => setTimeout(fn, ms))
+})
+
+// Vue ignores return values from lifecycle hooks, so timers must be
+// cancelled explicitly or countdown sfx keeps playing after unmount.
+onBeforeUnmount(() => {
+  timers.forEach(clearTimeout)
+  timers = []
 })
 </script>
 

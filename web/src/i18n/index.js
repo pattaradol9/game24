@@ -7,8 +7,14 @@ export const locale = reactive({ lang: saved === 'en' ? 'en' : 'th' })
 // Keep <html lang> in sync for accessibility and crawlers.
 document.documentElement.lang = locale.lang
 
-export function t(key) {
-  return messages[locale.lang][key] ?? messages.th[key] ?? key
+export function t(key, params) {
+  let text = messages[locale.lang][key] ?? messages.th[key] ?? key
+  if (params) {
+    for (const [name, value] of Object.entries(params)) {
+      text = text.replaceAll(`{${name}}`, value)
+    }
+  }
+  return text
 }
 
 export function useI18n() {

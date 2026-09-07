@@ -1,7 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useI18n } from '../i18n/index.js'
-import TierBadge from './TierBadge.vue'
+import TierAvatar from './TierAvatar.vue'
 import CrownMark from './CrownMark.vue'
 
 const { t } = useI18n()
@@ -25,8 +25,8 @@ const order = computed(() => {
       <div class="podium">
         <div v-for="(col, name) in order" :key="name" class="col">
           <template v-if="col">
+            <TierAvatar :tier="col.guest ? 'guest' : col.tier" :name="col.name" :size="44" />
             <span class="pname">{{ col.name }}</span>
-            <TierBadge :tier="col.tier" size="sm" />
             <span class="pts">{{ col.score }}</span>
             <div class="block" :class="name">
               <span>{{ col.rank ?? '' }}</span>

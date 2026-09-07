@@ -7,6 +7,13 @@ const TOKEN_KEY = 'g24_token'
 
 export const currentPlayer = ref(null)
 
+/**
+ * Bumped whenever the player's public identity changes (rename, Google
+ * sign-in). Views that render cached copies of the nickname — the
+ * leaderboard — watch this and refetch.
+ */
+export const playerIdentityVersion = ref(0)
+
 export function getToken() {
   return localStorage.getItem(TOKEN_KEY) || ''
 }
@@ -53,12 +60,14 @@ export async function renamePlayer(nickname) {
   const token = getToken()
   const data = await api.renameMe(nickname, token)
   currentPlayer.value = data.player
+  playerIdentityVersion.value++
   return currentPlayer.value
 }
 
 export async function signInWithGoogle(credential) {
   const { token, player } = await api.googleAuth(credential)
   setSession(token, player)
+  playerIdentityVersion.value++
   return player
 }
 
@@ -71,7 +80,7 @@ export async function initGoogle() {
   return googleClientId
 }
 
-export function renderGoogleButton(el, onCredential) {
+export function renderGoogleButton(el, onCredential, options = {}) {
   if (!googleClientId || !window.google?.accounts?.id) return false
   window.google.accounts.id.initialize({
     client_id: googleClientId,
@@ -83,6 +92,7 @@ export function renderGoogleButton(el, onCredential) {
     shape: 'pill',
     text: 'signin_with',
     locale: document.documentElement.lang || 'th',
+    ...options,
   })
   return true
 }
