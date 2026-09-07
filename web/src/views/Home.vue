@@ -12,6 +12,7 @@ import LeaderboardView from '../components/LeaderboardView.vue'
 import NicknameModal from '../components/NicknameModal.vue'
 import RoomCreateModal from '../components/RoomCreateModal.vue'
 import ProfileMenu from '../components/ProfileMenu.vue'
+import SiteFooter from '../components/SiteFooter.vue'
 
 const { t, lang, toggle } = useI18n()
 const router = useRouter()
@@ -135,6 +136,8 @@ function flipSound() {
 
     <NicknameModal v-if="needName" @done="needName = false" />
     <RoomCreateModal v-if="showCreate" @created="onRoomCreated" @close="showCreate = false" />
+
+    <SiteFooter />
   </main>
 </template>
 

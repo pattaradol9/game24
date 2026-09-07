@@ -2,7 +2,7 @@
 // Shared play surface for solo + rooms: the four cards, the operator pad,
 // the hint toast — plus the merge juice (sparkle burst + floating result
 // text right where the cards fused).
-import { nextTick, onBeforeUpdate, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUpdate, ref, watch } from 'vue'
 import { useI18n } from '../i18n/index.js'
 import { sfx } from '../audio.js'
 import { sparkle, popText, centerOf, cardEl, haptic } from '../fx.js'
@@ -20,6 +20,16 @@ const emit = defineEmits(['pick', 'op'])
 const { t } = useI18n()
 
 const root = ref(null)
+
+// The hint toast shows the full equation (and up to MAX_ALTS alternate ways),
+// so a single glance answers "how do I solve this?".
+const MAX_ALTS = 2
+const shownAlts = computed(() => (props.hintData?.alternatives ?? []).slice(0, MAX_ALTS))
+const extraCount = computed(() =>
+  Math.max(0, (props.hintData?.solutionCount ?? 0) - 1 - shownAlts.value.length)
+)
+// solver expressions use ASCII ops; display the typographic ones
+const pretty = (expr) => expr.replaceAll('*', '×').replaceAll('/', '÷')
 
 function onPick(card) {
   if (props.disabled) return
@@ -74,8 +84,11 @@ watch(
   (nv, ov) => {
     if (ov == null || nv == null || nv >= ov) return
     nextTick(() => {
-      const cards = props.hand?.cards ?? []
-      const merged = cards[cards.length - 1]
+      const hand = props.hand
+      if (!hand) return
+      // the merge just recorded is the last step; its result card sits at the
+      // pair's midpoint, not at the end of the row
+      const merged = hand.cards.find((c) => c.id === `s${hand.steps.length - 1}`)
       if (!merged || !merged.id.startsWith('s')) return
       const c = centerOf(cardEl(merged.id))
       if (!c) return
@@ -106,9 +119,21 @@ watch(
     />
     <p class="tip">{{ t('selectCards') }}</p>
     <Transition name="hint">
-      <div v-if="hintData" :key="hintData.result" class="hint-pop chip">
-        <Icon name="bulb" :size="15" />
-        {{ hintData.leftCard + 1 }} {{ hintData.op }} {{ hintData.rightCard + 1 }} = {{ hintData.result }}
+      <div v-if="hintData" :key="hintData.at ?? hintData.result" class="hint-pop chip">
+        <div class="hint-row">
+          <Icon name="bulb" :size="15" />
+          <template v-if="hintData.expr">
+            <code>{{ pretty(hintData.expr) }}</code>
+            <span class="hint-eq">= 24</span>
+          </template>
+          <template v-else>
+            <span>{{ hintData.leftCard + 1 }} {{ hintData.op }} {{ hintData.rightCard + 1 }} = {{ hintData.result }}</span>
+          </template>
+        </div>
+        <div v-if="hintData.expr && shownAlts.length" class="hint-alts">
+          <code v-for="a in shownAlts" :key="a" class="hint-alt">{{ pretty(a) }}</code>
+        </div>
+        <span v-if="extraCount > 0" class="hint-extra">{{ t('hintMoreWays').replace('{n}', extraCount) }}</span>
       </div>
     </Transition>
   </div>
@@ -148,11 +173,21 @@ watch(
 
 .tip { font-size: 0.82rem; color: var(--text-mute); text-align: center; }
 .hint-pop {
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
   color: var(--accent);
   border-color: rgba(246, 183, 60, 0.35);
   background: var(--accent-soft);
-  animation: float-up 4s var(--ease) forwards;
 }
+.hint-row { display: flex; align-items: center; gap: 6px; }
+.hint-row code, .hint-eq { font-weight: 700; letter-spacing: 0.02em; }
+.hint-alts { display: flex; flex-wrap: wrap; justify-content: center; gap: 2px 14px; }
+.hint-alt { font-size: 0.85rem; color: var(--text-mute); }
+.hint-extra { font-size: 0.78rem; color: var(--text-mute); }
+.hint-enter-active { animation: pop-in 0.3s var(--ease-out-back); }
+.hint-leave-active { transition: opacity 0.3s var(--ease), transform 0.3s var(--ease); }
+.hint-leave-to { opacity: 0; transform: translateY(-12px); }
 @media (prefers-reduced-motion: reduce) {
   .cardf-move, .cardf-leave-active { transition: none; }
 }

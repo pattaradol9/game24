@@ -65,7 +65,8 @@ func TierName(t int) string {
 	return tierNames[t]
 }
 
-// SingleHintQuota: hints per hand in single player, tier bonus included.
+// SingleHintQuota: hint budget for one single-player session (a visit to the
+// game, spanning all its hands), tier bonus included.
 func SingleHintQuota(tier int) int {
 	return 1 + TierBonusQuota(tier)
 }

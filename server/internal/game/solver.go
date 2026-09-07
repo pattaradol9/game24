@@ -240,21 +240,36 @@ type HintStep struct {
 	Result    Fraction `json:"result"`
 }
 
-// Hint returns the first move of the most beginner-friendly solution.
-func Hint(numbers []int) (HintStep, bool) {
-	sols := Solve(numbers)
-	for _, s := range sols {
-		if s.IntegerOnly {
-			return toHint(numbers, s.FirstStep)
-		}
-	}
-	if len(sols) == 0 {
-		return HintStep{}, false
-	}
-	return toHint(numbers, sols[0].FirstStep)
+// Reveal is a full hint: the opening move of the most beginner-friendly
+// solution, that solution as a complete equation, and every other distinct
+// equation — so the client can either nudge or outright solve the hand.
+type Reveal struct {
+	Step         HintStep
+	Expr         string
+	Alternatives []string
+	Count        int
 }
 
-func toHint(numbers []int, st Step) (HintStep, bool) {
+// Hint returns the most beginner-friendly solution (integer-only paths first,
+// then shortest) with its opening move, plus all remaining distinct solutions.
+func Hint(numbers []int) (Reveal, bool) {
+	sols := Solve(numbers)
+	if len(sols) == 0 {
+		return Reveal{}, false
+	}
+	best := sols[0]
+	step, err := toHint(numbers, best.FirstStep)
+	if err != nil {
+		return Reveal{}, false
+	}
+	alts := make([]string, 0, len(sols)-1)
+	for _, s := range sols[1:] {
+		alts = append(alts, s.Expr)
+	}
+	return Reveal{Step: step, Expr: best.Expr, Alternatives: alts, Count: len(sols)}, true
+}
+
+func toHint(numbers []int, st Step) (HintStep, error) {
 	a, b := F(int64(numbers[st.Left.Card])), F(int64(numbers[st.Right.Card]))
 	var val Fraction
 	switch st.Op {
@@ -267,9 +282,9 @@ func toHint(numbers []int, st Step) (HintStep, bool) {
 	case "/":
 		v, err := a.Div(b)
 		if err != nil {
-			return HintStep{}, false
+			return HintStep{}, err
 		}
 		val = v
 	}
-	return HintStep{LeftCard: st.Left.Card, RightCard: st.Right.Card, Op: st.Op, Result: val}, true
+	return HintStep{LeftCard: st.Left.Card, RightCard: st.Right.Card, Op: st.Op, Result: val}, nil
 }

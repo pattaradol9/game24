@@ -184,7 +184,7 @@ func TestDeletePlayerCascades(t *testing.T) {
 	if _, _, err = s.AwardEXP(gp.ID, "queen", 60, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.CreateRound(gp.ID, "queen", []int{1, 2, 3, 4}); err != nil {
+	if _, err = s.CreateRound(gp.ID, "queen", []int{1, 2, 3, 4}, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -259,7 +259,7 @@ func TestOverviewCounters(t *testing.T) {
 	if _, _, err = s.AwardEXP(gp.ID, "queen", 40, true); err != nil {
 		t.Fatal(err)
 	}
-	r, err := s.CreateRound(gp.ID, "queen", []int{1, 2, 3, 4})
+	r, err := s.CreateRound(gp.ID, "queen", []int{1, 2, 3, 4}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ func TestAdminRoundsListing(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, p := range []Player{g1, g2} {
-		r, err := s.CreateRound(p.ID, "queen", []int{1, 2, 3, 4})
+		r, err := s.CreateRound(p.ID, "queen", []int{1, 2, 3, 4}, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -336,7 +336,7 @@ func TestBackupAndReset(t *testing.T) {
 	if _, _, err = s.AwardEXP(gp.ID, "queen", 90, true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = s.CreateRound(gp.ID, "queen", []int{1, 2, 3, 4}); err != nil {
+	if _, err = s.CreateRound(gp.ID, "queen", []int{1, 2, 3, 4}, ""); err != nil {
 		t.Fatal(err)
 	}
 

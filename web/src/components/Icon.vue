@@ -24,6 +24,7 @@ const PATHS = {
   refresh: 'M20 11a8 8 0 1 0-.6 4M20 5v6h-6',
   logout: 'M15 16l4-4-4-4M19 12H9M12 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h6',
   edit: 'M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17v3z',
+  heart: 'M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.6l-1-1a5.5 5.5 0 0 0-7.8 7.8l1 1L12 21.2l7.8-7.8 1-1a5.5 5.5 0 0 0 0-7.8z',
 }
 const FILLED = new Set(['play'])
 </script>

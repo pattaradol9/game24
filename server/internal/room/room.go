@@ -363,7 +363,11 @@ func (r *Room) Hint(sessionID string) error {
 	p.hintsLeft--
 	r.mu.Unlock()
 	r.sendTo(sessionID, "hint", map[string]any{
-		"leftCard": h.LeftCard, "rightCard": h.RightCard, "op": h.Op, "result": h.Result.String(),
+		"leftCard": h.Step.LeftCard, "rightCard": h.Step.RightCard,
+		"op": h.Step.Op, "result": h.Step.Result.String(),
+		"expr":          h.Expr,
+		"alternatives":  h.Alternatives,
+		"solutionCount": h.Count,
 	})
 	return nil
 }

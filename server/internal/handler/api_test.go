@@ -14,6 +14,7 @@ import (
 	"github.com/pattaradol9/game24/server/internal/config"
 	"github.com/pattaradol9/game24/server/internal/crypto"
 	"github.com/pattaradol9/game24/server/internal/game"
+	"github.com/pattaradol9/game24/server/internal/progress"
 	"github.com/pattaradol9/game24/server/internal/room"
 	"github.com/pattaradol9/game24/server/internal/store"
 )
@@ -199,5 +200,74 @@ func TestGoogleAuthDisabled(t *testing.T) {
 	code, _ := post(t, mux, "/api/v1/auth/google", map[string]string{"credential": "abc"}, "")
 	if code != 401 {
 		t.Fatalf("bad credential should 401, got %d", code)
+	}
+}
+
+// One play session grants the full tier quota, shared across every hand of
+// that session; a fresh session starts with the quota refilled.
+func TestHintSessionQuota(t *testing.T) {
+	api, mux := newTestAPI(t)
+
+	_, res := post(t, mux, "/api/v1/players", map[string]string{"nickname": "Hinter"}, "")
+	if res["success"] != true {
+		t.Fatalf("create player: %v", res)
+	}
+	token := data(res)["token"].(string)
+	p, err := api.Store.PlayerByToken(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// gold tier (level 40): quota = 1 base + 1 tier bonus = 2 per session
+	if _, _, err := api.Store.AwardEXP(p.ID, "queen", progress.ExpForLevel(40), true); err != nil {
+		t.Fatal(err)
+	}
+
+	// newRound creates a hand in the session and reports the hints remaining.
+	newRound := func(session string) (roundID string, hintsLeft int) {
+		code, res := post(t, mux, "/api/v1/rounds", map[string]any{"mode": "queen", "sessionId": session}, token)
+		if code != 200 {
+			t.Fatalf("create round: %d %v", code, res)
+		}
+		if got := int(data(res)["hintQuota"].(float64)); got != 2 {
+			t.Fatalf("gold hint quota = %d, want 2", got)
+		}
+		return data(res)["roundId"].(string), int(data(res)["hintsLeft"].(float64))
+	}
+	hint := func(roundID string) int {
+		code, _ := post(t, mux, "/api/v1/rounds/"+roundID+"/hint", map[string]any{}, token)
+		return code
+	}
+
+	// session 1: the full quota is usable, spread over different hands
+	r1, left := newRound("sess-1")
+	if left != 2 {
+		t.Fatalf("fresh session hintsLeft = %d, want 2", left)
+	}
+	if code := hint(r1); code != 200 {
+		t.Fatalf("first hint: %d", code)
+	}
+	r2, left := newRound("sess-1")
+	if left != 1 {
+		t.Fatalf("hintsLeft after one use = %d, want 1", left)
+	}
+	if code := hint(r2); code != 200 {
+		t.Fatalf("second hint: %d", code)
+	}
+	// quota spent: the next hand of the same session gets no hint
+	r3, left := newRound("sess-1")
+	if left != 0 {
+		t.Fatalf("hintsLeft after two uses = %d, want 0", left)
+	}
+	if code := hint(r3); code != 403 {
+		t.Fatalf("hint past quota = %d, want 403", code)
+	}
+
+	// session 2: a fresh visit refills the budget
+	r4, left := newRound("sess-2")
+	if left != 2 {
+		t.Fatalf("new session hintsLeft = %d, want 2", left)
+	}
+	if code := hint(r4); code != 200 {
+		t.Fatalf("hint in new session: %d", code)
 	}
 }

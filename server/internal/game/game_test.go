@@ -140,12 +140,12 @@ func TestHint(t *testing.T) {
 		t.Fatal("expected hint")
 	}
 	nums := []int{4, 7, 8, 8}
-	if h.LeftCard == h.RightCard {
+	if h.Step.LeftCard == h.Step.RightCard {
 		t.Fatalf("hint uses same card twice: %v", h)
 	}
-	a, b := F(int64(nums[h.LeftCard])), F(int64(nums[h.RightCard]))
+	a, b := F(int64(nums[h.Step.LeftCard])), F(int64(nums[h.Step.RightCard]))
 	var want Fraction
-	switch h.Op {
+	switch h.Step.Op {
 	case "+":
 		want = a.Add(b)
 	case "-":
@@ -159,10 +159,18 @@ func TestHint(t *testing.T) {
 		}
 		want = q
 	default:
-		t.Fatalf("unexpected op %q", h.Op)
+		t.Fatalf("unexpected op %q", h.Step.Op)
 	}
-	if !want.Equal(h.Result) {
-		t.Fatalf("hint result %s, want %s", h.Result, want)
+	if !want.Equal(h.Step.Result) {
+		t.Fatalf("hint result %s, want %s", h.Step.Result, want)
+	}
+	sols := Solve(nums)
+	if h.Expr == "" {
+		t.Fatal("hint carries no equation")
+	}
+	if h.Count != len(sols) || len(h.Alternatives) != len(sols)-1 {
+		t.Fatalf("solution count = %d with %d alternatives, want %d and %d",
+			h.Count, len(h.Alternatives), len(sols), len(sols)-1)
 	}
 	if _, ok := Hint([]int{1, 1, 1, 1}); ok {
 		t.Fatal("unsolvable hand should have no hint")

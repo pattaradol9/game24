@@ -4,6 +4,7 @@ import Brand from '../components/Brand.vue'
 import Icon from '../components/Icon.vue'
 import LeaderboardView from '../components/LeaderboardView.vue'
 import ProfileMenu from '../components/ProfileMenu.vue'
+import SiteFooter from '../components/SiteFooter.vue'
 
 const { t } = useI18n()
 </script>
@@ -23,6 +24,8 @@ const { t } = useI18n()
       <h1>{{ t('leaderboard') }}</h1>
       <LeaderboardView />
     </section>
+
+    <SiteFooter />
   </main>
 </template>
 

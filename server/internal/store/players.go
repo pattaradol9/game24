@@ -351,6 +351,7 @@ type Round struct {
 	ID        string
 	PlayerID  string
 	Mode      string
+	SessionID string
 	Numbers   []int
 	Status    string
 	Points    int64
@@ -359,14 +360,16 @@ type Round struct {
 	DealtAt   time.Time
 }
 
-func (s *Store) CreateRound(playerID, mode string, numbers []int) (Round, error) {
+// CreateRound deals a hand into a new round. sessionID groups consecutive
+// hands of one play session, so hint budgets can span rounds.
+func (s *Store) CreateRound(playerID, mode string, numbers []int, sessionID string) (Round, error) {
 	id := randomID(16)
 	numsJSON, err := json.Marshal(numbers)
 	if err != nil {
 		return Round{}, err
 	}
-	if _, err := s.db.Exec(`INSERT INTO rounds (id, player_id, mode, numbers) VALUES (?,?,?,?)`,
-		id, playerID, mode, string(numsJSON)); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO rounds (id, player_id, mode, session_id, numbers) VALUES (?,?,?,?,?)`,
+		id, playerID, mode, sessionID, string(numsJSON)); err != nil {
 		return Round{}, err
 	}
 	return s.RoundByID(id, playerID)
@@ -378,9 +381,9 @@ func (s *Store) RoundByID(id, playerID string) (Round, error) {
 		numsJSON   string
 		dealtAtStr string
 	)
-	err := s.db.QueryRow(`SELECT id, player_id, mode, numbers, status, points, elapsed_ms, hints_used, dealt_at
+	err := s.db.QueryRow(`SELECT id, player_id, mode, session_id, numbers, status, points, elapsed_ms, hints_used, dealt_at
 		FROM rounds WHERE id = ? AND player_id = ?`, id, playerID).
-		Scan(&r.ID, &r.PlayerID, &r.Mode, &numsJSON, &r.Status, &r.Points, &r.ElapsedMs, &r.HintsUsed, &dealtAtStr)
+		Scan(&r.ID, &r.PlayerID, &r.Mode, &r.SessionID, &numsJSON, &r.Status, &r.Points, &r.ElapsedMs, &r.HintsUsed, &dealtAtStr)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, ErrNotFound
 	}
@@ -394,6 +397,15 @@ func (s *Store) RoundByID(id, playerID string) (Round, error) {
 		return r, err
 	}
 	return r, nil
+}
+
+// HintsUsedInSession sums the hint counters of every round the player has
+// played under one session id.
+func (s *Store) HintsUsedInSession(playerID, sessionID string) (int64, error) {
+	var used int64
+	err := s.db.QueryRow(`SELECT COALESCE(SUM(hints_used), 0) FROM rounds
+		WHERE player_id = ? AND session_id = ?`, playerID, sessionID).Scan(&used)
+	return used, err
 }
 
 func (s *Store) FinishRound(id, status string, points, elapsedMs int64) error {

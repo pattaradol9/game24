@@ -22,9 +22,15 @@ export function useGame() {
   const combo = ref(0) // consecutive merges in this hand (sound pitch ladder)
   const timeLimit = ref(0)
 
+  // One hint budget per visit to the game: every hand dealt while this view
+  // stays mounted shares the same session, so hints never refill between
+  // rounds — only leaving and coming back grants a fresh budget.
+  const sessionId = crypto.randomUUID
+    ? crypto.randomUUID()
+    : `s-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
   let deadline = 0
   let timer = null
-  let hintTimer = 0
   let pausedAt = 0
   let lastBeat = -1
   let disposed = false
@@ -44,7 +50,6 @@ export function useGame() {
   function stop() {
     disposed = true
     stopTimer()
-    clearTimeout(hintTimer)
     hintCard.value = null
   }
   onUnmounted(stop)
@@ -56,12 +61,12 @@ export function useGame() {
     busy.value = true
     combo.value = 0
     try {
-      const data = await api.createRound(m, getToken())
+      const data = await api.createRound(m, getToken(), sessionId)
       round.value = data
       hand.value = newHand(data.numbers)
       remaining.value = data.timeLimit
       timeLimit.value = data.timeLimit
-      hintLeft.value = data.hintQuota ?? singleHintQuota(getPlayer()?.level ?? 1)
+      hintLeft.value = data.hintsLeft ?? singleHintQuota(getPlayer()?.level ?? 1)
       hintCard.value = null
       result.value = null
       deadline = Date.now() + data.timeLimit * 1000
@@ -109,6 +114,7 @@ export function useGame() {
       if (disposed) return
       result.value = { win: false, solution: '', points: 0 }
     }
+    hintCard.value = null
     phase.value = 'result'
   }
 
@@ -140,6 +146,7 @@ export function useGame() {
       burst()
       sfx.win()
       result.value = { win: true, expr: data.expr, points: data.points, player: data.player, levelUp: data.levelUp, tierUp: data.tierUp, remaining: remaining.value, timeLimit: timeLimit.value }
+      hintCard.value = null
       phase.value = 'result'
     } catch (e) {
       error.value = e.message
@@ -167,6 +174,7 @@ export function useGame() {
       updatePlayer(data.player)
       sfx.lose()
       result.value = { win: false, solution: data.solution, player: data.player, points: 0, remaining: remaining.value, timeLimit: timeLimit.value }
+      hintCard.value = null
       phase.value = 'result'
     } catch (e) {
       error.value = e.message
@@ -182,10 +190,9 @@ export function useGame() {
       const h = await api.hintRound(round.value.roundId, getToken())
       if (disposed) return
       hintLeft.value = Math.max(0, hintLeft.value - 1)
-      hintCard.value = h
+      // the hint stays on the board until the round ends
+      hintCard.value = { ...h, at: Date.now() }
       sfx.pop()
-      clearTimeout(hintTimer)
-      hintTimer = setTimeout(() => (hintCard.value = null), 4000)
     } catch (e) {
       error.value = e.message
     } finally {

@@ -11,6 +11,8 @@ const router = createRouter({
     { path: '/solo', component: () => import('./views/SoloGame.vue') },
     { path: '/room/:code', component: () => import('./views/RoomGame.vue') },
     { path: '/leaderboard', component: () => import('./views/Leaderboard.vue') },
+    { path: '/privacy', component: () => import('./views/LegalView.vue'), props: { doc: 'privacy' } },
+    { path: '/terms', component: () => import('./views/LegalView.vue'), props: { doc: 'terms' } },
     { path: '/admin', component: () => import('./views/Admin.vue') },
   ],
 })

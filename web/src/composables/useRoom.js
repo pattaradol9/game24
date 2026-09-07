@@ -76,6 +76,8 @@ export function useRoom() {
         break
       case 'round_result':
         stopTimer()
+        // the round is over: the hint served its purpose
+        hint.value = null
         roundResult.value = d
         state.value = 'summary'
         if (d.standings) players.value = d.standings
@@ -87,13 +89,15 @@ export function useRoom() {
         matchResult.value = d.standings ?? []
         break
       case 'hint':
-        hint.value = d
+        // stays on the board until the round ends
+        hint.value = { ...d, at: Date.now() }
         sfx.click()
-        setTimeout(() => (hint.value = null), 5000)
         break
       case 'regen':
         numbers.value = d.numbers
         hand.value = newHand(d.numbers)
+        // the old hint describes the replaced hand
+        hint.value = null
         break
       case 'error':
         error.value = d.message ?? 'error'

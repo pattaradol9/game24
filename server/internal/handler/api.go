@@ -292,7 +292,8 @@ func sanitizeName(s string) string {
 func (a *API) createRound(w http.ResponseWriter, r *http.Request) {
 	p, _ := playerOf(r)
 	var body struct {
-		Mode game.Mode `json:"mode"`
+		Mode      game.Mode `json:"mode"`
+		SessionID string    `json:"sessionId"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		fail(w, http.StatusBadRequest, "mode required")
@@ -303,23 +304,34 @@ func (a *API) createRound(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	body.SessionID = strings.TrimSpace(body.SessionID)
+	if len(body.SessionID) > 64 {
+		body.SessionID = body.SessionID[:64]
+	}
 	hand, err := game.Deal(body.Mode, rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), uint64(time.Now().UnixNano()>>32))))
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	round, err := a.Store.CreateRound(p.ID, string(body.Mode), hand)
+	round, err := a.Store.CreateRound(p.ID, string(body.Mode), hand, body.SessionID)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	lv := progress.LevelFromExp(p.TotalExp)
+	quota := int64(progress.SingleHintQuota(progress.TierFromLevel(lv)))
+	used, err := a.Store.HintsUsedInSession(p.ID, body.SessionID)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
 	ok(w, map[string]any{
 		"roundId":    round.ID,
 		"numbers":    hand,
 		"timeLimit":  cfg.TimeLimitSec,
 		"multiplier": cfg.Multiplier,
-		"hintQuota":  progress.SingleHintQuota(progress.TierFromLevel(lv)),
+		"hintQuota":  quota,
+		"hintsLeft":  quota - used,
 	})
 }
 
@@ -442,8 +454,17 @@ func (a *API) hintRound(w http.ResponseWriter, r *http.Request) {
 	}
 	lv := progress.LevelFromExp(p.TotalExp)
 	quota := int64(progress.SingleHintQuota(progress.TierFromLevel(lv)))
-	if round.HintsUsed >= quota {
-		fail(w, http.StatusForbidden, "no hints left for this hand")
+	// the budget is per play session: hands dealt after this one draw from the
+	// same pool, so count every hint spent under this session id
+	used := round.HintsUsed
+	if round.SessionID != "" {
+		if used, err = a.Store.HintsUsedInSession(p.ID, round.SessionID); err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if used >= quota {
+		fail(w, http.StatusForbidden, "no hints left for this session")
 		return
 	}
 	if _, err := a.Store.TryUseHint(round.ID, p.ID); err != nil {
@@ -456,9 +477,12 @@ func (a *API) hintRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ok(w, map[string]any{
-		"leftCard": h.LeftCard, "rightCard": h.RightCard,
-		"op": h.Op, "result": h.Result.String(),
-		"leftForHintQuota": quota - round.HintsUsed - 1,
+		"leftCard": h.Step.LeftCard, "rightCard": h.Step.RightCard,
+		"op": h.Step.Op, "result": h.Step.Result.String(),
+		"expr":             h.Expr,
+		"alternatives":     h.Alternatives,
+		"solutionCount":    h.Count,
+		"leftForHintQuota": quota - used - 1,
 	})
 }
 

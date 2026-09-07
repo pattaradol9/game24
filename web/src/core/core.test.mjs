@@ -81,12 +81,33 @@ test('checker: undo restores prior state', () => {
 test('checker: 5*(5-1/5) wins via UI flow (fraction path)', () => {
   const st = newHand([1, 5, 5, 5])
   pickCard(st, st.cards[0]); setOperator(st, '/'); pickCard(st, st.cards[1])   // 1/5
-  // board now: [5, 5, 1/5]
-  pickCard(st, st.cards[0]); setOperator(st, '-'); pickCard(st, st.cards[2])   // 5 - 1/5 = 24/5
-  // board now: [5, 24/5]
-  assert.equal(format(st.cards[1].value), '24/5')
-  pickCard(st, st.cards[0]); setOperator(st, '*'); pickCard(st, st.cards[1])   // 5 * 24/5 = 24
+  // board now: [1/5, 5, 5] — the result sits at the pair's midpoint
+  pickCard(st, st.cards[2]); setOperator(st, '-'); pickCard(st, st.cards[0])   // 5 - 1/5 = 24/5
+  // board now: [24/5, 5]
+  assert.equal(format(st.cards[0].value), '24/5')
+  pickCard(st, st.cards[1]); setOperator(st, '*'); pickCard(st, st.cards[0])   // 5 * 24/5 = 24
   assert.equal(st.won, true)
+})
+
+test('checker: merged card lands at the midpoint of its pair', () => {
+  // adjacent pair in the middle: result centers between the survivors
+  const st = newHand([2, 10, 12, 4])
+  pickCard(st, st.cards[1]); setOperator(st, '+'); pickCard(st, st.cards[2])   // 10+12 = 22
+  assert.deepEqual(st.cards.map((c) => c.display), ['2', '22', '4'])
+
+  // adjacent pair at the left edge: result takes the left flank
+  const leftEdge = newHand([2, 10, 12, 4])
+  pickCard(leftEdge, leftEdge.cards[0]); setOperator(leftEdge, '+'); pickCard(leftEdge, leftEdge.cards[1])   // 2+10 = 12
+  assert.deepEqual(leftEdge.cards.map((c) => c.display), ['12', '12', '4'])
+
+  // non-adjacent pair: result centers across the whole vacated span
+  const spread = newHand([2, 10, 12, 4])
+  pickCard(spread, spread.cards[0]); setOperator(spread, '+'); pickCard(spread, spread.cards[3])   // 2+4 = 6
+  assert.deepEqual(spread.cards.map((c) => c.display), ['10', '6', '12'])
+
+  // undo replays the steps and reproduces the same layout
+  undo(spread)
+  assert.deepEqual(spread.cards.map((c) => c.display), ['2', '10', '12', '4'])
 })
 
 test('progress: level curve matches server', () => {

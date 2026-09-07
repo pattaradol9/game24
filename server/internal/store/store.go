@@ -86,6 +86,7 @@ func (s *Store) migrate() error {
 			id          TEXT PRIMARY KEY,
 			player_id   TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
 			mode        TEXT NOT NULL,
+			session_id  TEXT NOT NULL DEFAULT '',
 			numbers     TEXT NOT NULL,
 			status      TEXT NOT NULL DEFAULT 'open',
 			points      INTEGER NOT NULL DEFAULT 0,
@@ -106,6 +107,7 @@ func (s *Store) migrate() error {
 		`CREATE INDEX IF NOT EXISTS idx_events_ts ON event_logs(ts DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_action ON event_logs(action, ts DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_rounds_dealt ON rounds(dealt_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_rounds_session ON rounds(player_id, session_id)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -119,6 +121,7 @@ func (s *Store) migrate() error {
 		`ALTER TABLE players ADD COLUMN banned INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE players ADD COLUMN banned_at TEXT`,
 		`ALTER TABLE players ADD COLUMN ban_reason TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE rounds ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range alters {
 		if _, err := s.db.Exec(q); err != nil {

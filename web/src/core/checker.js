@@ -53,6 +53,19 @@ export function setOperator(state, op) {
   return state
 }
 
+// collapseInto removes the two source cards and inserts the merged card at
+// the pair's midpoint, so the result lands between its sources instead of
+// jumping to the end of the row. Survivors left of the pair's visual midpoint
+// stay on the left, the rest move right.
+function collapseInto(cards, a, b, card) {
+  const ia = cards.indexOf(a)
+  const ib = cards.indexOf(b)
+  const mid = (Math.min(ia, ib) + Math.max(ia, ib)) / 2
+  const rest = cards.filter((c) => c !== a && c !== b)
+  rest.splice(rest.filter((c) => cards.indexOf(c) < mid).length, 0, card)
+  return rest
+}
+
 function merge(state, a, b) {
   const op = state.operator
   if (!op) return state
@@ -65,8 +78,7 @@ function merge(state, a, b) {
     origin: { step: stepIndex },
     expr: `(${a.expr}${op}${b.expr})`,
   }
-  state.cards = state.cards.filter((c) => c !== a && c !== b)
-  state.cards.push(card)
+  state.cards = collapseInto(state.cards, a, b, card)
   state.steps.push({ left: a.origin, right: b.origin, op })
   state.selection = null
   state.operator = null
@@ -103,8 +115,7 @@ export function rebuild(state, numbers, steps) {
       origin: { step: k },
       expr: `(${a.expr}${st.op}${b.expr})`,
     }
-    state.cards = state.cards.filter((c) => c !== a && c !== b)
-    state.cards.push(card)
+    state.cards = collapseInto(state.cards, a, b, card)
     byOrigin.set(JSON.stringify(card.origin), card)
   })
   state.won = state.cards.length === 1 && is24(state.cards[0].value)

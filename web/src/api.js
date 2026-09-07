@@ -29,7 +29,8 @@ export const api = {
   googleAuth: (credential) => request('/auth/google', { method: 'POST', body: { credential } }),
   me: (token) => request('/me', { token }),
   renameMe: (nickname, token) => request('/me/rename', { method: 'POST', body: { nickname }, token }),
-  createRound: (mode, token) => request('/rounds', { method: 'POST', body: { mode }, token }),
+  createRound: (mode, token, sessionId) =>
+    request('/rounds', { method: 'POST', body: { mode, sessionId }, token }),
   submitRound: (roundId, steps, token) =>
     request(`/rounds/${roundId}/submit`, { method: 'POST', body: { steps }, token }),
   skipRound: (roundId, token) => request(`/rounds/${roundId}/skip`, { method: 'POST', body: {}, token }),

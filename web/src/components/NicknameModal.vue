@@ -45,6 +45,12 @@ async function playAsGuest() {
       <div class="rule"><span>or</span></div>
       <GoogleSignIn @signed-in="emit('done', $event)" />
       <p class="hint">{{ t('googleHint') }}</p>
+      <p class="legal">
+        {{ t('legalAgree') }}
+        <RouterLink to="/terms">{{ t('terms') }}</RouterLink>
+        {{ t('legalAnd') }}
+        <RouterLink to="/privacy">{{ t('privacy') }}</RouterLink>
+      </p>
       <p v-if="error" class="err">{{ error }}</p>
     </div>
   </div>
@@ -71,6 +77,9 @@ async function playAsGuest() {
 }
 h2 { font-size: 1.25rem; font-weight: 500; margin-top: 4px; }
 .hint { font-size: 0.8rem; color: var(--text-mute); line-height: 1.5; }
+.legal { font-size: 0.75rem; color: var(--text-mute); line-height: 1.6; }
+.legal a { color: var(--text-dim); }
+@media (hover: hover) { .legal a:hover { color: var(--accent); text-decoration: underline; } }
 .err { color: var(--bad); font-size: 0.84rem; }
 .rule {
   display: flex;
