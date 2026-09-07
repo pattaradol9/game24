@@ -70,6 +70,7 @@ docker run --rm -p 8080:8080 -v game24-data:/data game24
 | `GOOGLE_OAUTH_CLIENT_ID` | — | OAuth Web client id; empty = Google sign-in disabled (guest play only) |
 | `ADMIN_EMAILS` | — | CSV allowlist of Google emails that may use the admin portal at `/admin`; empty = admin API disabled (all `/api/v1/admin/*` routes 404) |
 | `CORS_ORIGINS` | http://localhost:5173 | Allowed origins |
+| `PUBLIC_URL` | — | Canonical site origin (e.g. `https://game24.example.com`) used for `robots.txt`, `sitemap.xml` and absolute SEO tags; empty = canonical/OG URLs are derived per-request from the Host header, `robots.txt` blocks indexing entirely, and `sitemap.xml` 404s |
 
 ### Set up Sign in with Google
 
@@ -90,7 +91,7 @@ The service uses AES-256-GCM with a 32-byte secret key. There are two ways to wi
    rm ./key.txt   # don't leave it lying around
    ```
    Keep an offline backup of the key somewhere safe — **losing the key = losing all encrypted player data**
-2. Enable the Secret Manager API and grant the runtime's service account access (Cloud Run/GKE/GCE = the service's attached service account; outside GCP = set `GOOGLE_APPLICATION_CREDENTIALS` to a service account file):
+2. Enable the Secret Manager API and grant the runtime's service account access (Cloud Run/GKE/GCE = the service's attached service account; outside GCP = set `GOOGLE_APPLICATION_CREDENTIALS` to a service account file — a non-empty value in `.env` wins over any shell export, see `.env.example`):
    ```bash
    gcloud services enable secretmanager.googleapis.com
    gcloud projects add-iam-policy-binding PROJECT \
@@ -112,6 +113,28 @@ Or Docker/VM: `gcloud secrets versions access latest --secret=game24-encryption-
 **Local dev needs no GCP at all** — just put `ENCRYPTION_KEY` in `.env`
 
 If the key is missing / malformed / cannot be fetched from Secret Manager at startup, the service **refuses to start** (fail-closed) — running instances are unaffected
+
+## PWA & SEO
+
+The SPA ships as a full **PWA** (via `vite-plugin-pwa`, workbox `generateSW`):
+
+- **Web app manifest** generated from `web/vite.config.js` (Thai name, standalone display, dark navy theme, 192/512 + maskable PNG icons in `web/public/` — regenerate with ImageMagick from the `favicon.svg` artwork if the brand changes)
+- **Service worker** (`/sw.js`) auto-updates and precaches the whole app shell (49 entries) so the game boots offline; Google Fonts are cached at runtime; `/api/` requests are never served from cache (game state must stay fresh)
+- **Installable** on Android/desktop (Chrome) and addable to the home screen on iOS (`apple-touch-icon` + iOS meta tags in `web/index.html`)
+- In dev (`npm run dev`) the SW is enabled too (`devOptions`); unregister it in DevTools → Application if it interferes
+
+**SEO** is handled on three layers:
+
+1. **Static defaults** in `web/index.html` — Thai title/description, canonical, Open Graph + Twitter cards (with a generated 1200×630 `og-card.png`), `WebApplication` JSON-LD, theme-color
+2. **Server-side rewriting** (`server/internal/httpserver/seo.go`) — the embedded-binary SPA handler rewrites title/description/canonical/OG/Twitter/robots per route on the first HTML response, so crawlers that don't run JavaScript (Facebook/Line/Twitter link previews) still get correct cards. Shared room links render a "เข้าร่วมห้อง CODE" card with `noindex`
+3. **Client-side sync** (`web/src/seo.js`, wired in `web/src/main.js` route meta) — every SPA navigation updates title, description, canonical, OG/Twitter tags and `<html lang>` from the per-route bilingual meta table
+
+`robots.txt` and `sitemap.xml` are **generated dynamically by the Go server** (not static files) because they need absolute URLs:
+
+- With `PUBLIC_URL` set: robots allows all public routes but disallows `/admin`, `/room/`, `/api/`, and points at `PUBLIC_URL/sitemap.xml` (fixed public routes: `/`, `/solo`, `/leaderboard`, `/privacy`, `/terms`)
+- Without `PUBLIC_URL`: `robots.txt` returns `Disallow: /` (staging/preview origins stay unindexed) and `sitemap.xml` returns 404
+
+After deploying to the production domain: set `PUBLIC_URL`, then verify the property in Google Search Console and submit `/sitemap.xml` (see `docs/analytics-gsc-adsense-plan.md` Phase 2).
 
 ## Testing
 

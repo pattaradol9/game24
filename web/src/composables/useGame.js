@@ -51,6 +51,7 @@ export function useGame() {
     disposed = true
     stopTimer()
     hintCard.value = null
+    combo.value = 0
   }
   onUnmounted(stop)
 
@@ -115,6 +116,7 @@ export function useGame() {
       result.value = { win: false, solution: '', points: 0 }
     }
     hintCard.value = null
+    combo.value = 0
     phase.value = 'result'
   }
 
@@ -147,6 +149,7 @@ export function useGame() {
       sfx.win()
       result.value = { win: true, expr: data.expr, points: data.points, player: data.player, levelUp: data.levelUp, tierUp: data.tierUp, remaining: remaining.value, timeLimit: timeLimit.value }
       hintCard.value = null
+      combo.value = 0
       phase.value = 'result'
     } catch (e) {
       error.value = e.message
@@ -175,6 +178,7 @@ export function useGame() {
       sfx.lose()
       result.value = { win: false, solution: data.solution, player: data.player, points: 0, remaining: remaining.value, timeLimit: timeLimit.value }
       hintCard.value = null
+      combo.value = 0
       phase.value = 'result'
     } catch (e) {
       error.value = e.message

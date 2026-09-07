@@ -5,6 +5,37 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>24 Game — รวมเลขให้ได้ 24!</title>
+    <meta name="description" content="เกมไพ่คณิตศาสตร์คลาสสิก จับไพ่ 4 ใบ ผสมด้วย + − × ÷ ให้ได้เลข 24 เล่นเดี่ยวเก็บ EXP ไต่ tier หรือสร้างห้องแข่งกับเพื่อนแบบเรียลไทม์ ฟรี ไม่ต้องสมัคร" />
+    <meta name="keywords" content="24 game, เกม 24, เกมคณิตศาสตร์, math game, math puzzle, card game, เกมไพ่, ห้องเรียนคณิตศาสตร์" />
+    <link rel="canonical" href="/" />
+    <!-- robots is rewritten to noindex for /admin and /room/* by the server -->
+    <meta name="robots" content="index, follow" />
+
+    <!-- Open Graph / Twitter (per-route values are rewritten server-side) -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="24 Game" />
+    <meta property="og:title" content="24 Game — รวมเลขให้ได้ 24!" />
+    <meta property="og:description" content="จับไพ่ 4 ใบ ผสมด้วย + − × ÷ ให้ได้ 24 เล่นเดี่ยวหรือแข่งกับเพื่อนแบบเรียลไทม์" />
+    <meta property="og:url" content="/" />
+    <meta property="og:image" content="/og-card.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="24 Game — draw 4 cards and make 24 with + − × ÷" />
+    <meta property="og:locale" content="th_TH" />
+    <meta property="og:locale:alternate" content="en_US" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="24 Game — รวมเลขให้ได้ 24!" />
+    <meta name="twitter:description" content="จับไพ่ 4 ใบ ผสมด้วย + − × ÷ ให้ได้ 24 เล่นเดี่ยวหรือแข่งกับเพื่อนแบบเรียลไทม์" />
+    <meta name="twitter:image" content="/og-card.png" />
+
+    <!-- PWA -->
+    <meta name="theme-color" content="#0c0f16" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="24 Game" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -12,6 +43,27 @@
       rel="stylesheet"
     />
     <script src="https://accounts.google.com/gsi/client" async defer></script>
+
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "24 Game",
+        "alternateName": "เกม 24",
+        "applicationCategory": "GameApplication",
+        "operatingSystem": "Web",
+        "browserRequirements": "Requires JavaScript",
+        "description": "The classic 24 math game: draw 4 cards and combine them with + − × ÷ to make 24. Solo EXP grind or real-time multiplayer rooms.",
+        "inLanguage": ["th", "en"],
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "THB" },
+        "featureList": [
+          "Single player with 4 difficulty modes (Jack, Queen, King, Ace)",
+          "Real-time multiplayer rooms with shareable invite links",
+          "Levels, tiers and per-mode leaderboards",
+          "Server-verified anti-cheat scoring"
+        ]
+      }
+    </script>
   </head>
   <body>
     <div id="app"></div>

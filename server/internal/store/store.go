@@ -103,11 +103,6 @@ func (s *Store) migrate() error {
 			target TEXT NOT NULL DEFAULT '',
 			detail TEXT NOT NULL DEFAULT ''
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_pms_board ON player_mode_stats(mode, exp DESC, hands_solved DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_ts ON event_logs(ts DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_events_action ON event_logs(action, ts DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_rounds_dealt ON rounds(dealt_at DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_rounds_session ON rounds(player_id, session_id)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -116,7 +111,8 @@ func (s *Store) migrate() error {
 	}
 	// Column additions for databases created before the admin portal: ALTER
 	// TABLE has no IF NOT EXISTS for columns, so ignore duplicate-column
-	// errors and fail on anything else.
+	// errors and fail on anything else. These must run before index creation
+	// because indexes may reference the added columns.
 	alters := []string{
 		`ALTER TABLE players ADD COLUMN banned INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE players ADD COLUMN banned_at TEXT`,
@@ -128,6 +124,18 @@ func (s *Store) migrate() error {
 			if !strings.Contains(err.Error(), "duplicate column name") {
 				return fmt.Errorf("store: migrate: %w", err)
 			}
+		}
+	}
+	indexes := []string{
+		`CREATE INDEX IF NOT EXISTS idx_pms_board ON player_mode_stats(mode, exp DESC, hands_solved DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_ts ON event_logs(ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_events_action ON event_logs(action, ts DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_rounds_dealt ON rounds(dealt_at DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_rounds_session ON rounds(player_id, session_id)`,
+	}
+	for _, q := range indexes {
+		if _, err := s.db.Exec(q); err != nil {
+			return fmt.Errorf("store: migrate: %w", err)
 		}
 	}
 	return nil

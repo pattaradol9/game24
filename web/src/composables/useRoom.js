@@ -76,8 +76,10 @@ export function useRoom() {
         break
       case 'round_result':
         stopTimer()
-        // the round is over: the hint served its purpose
+        // the round is over: the hint served its purpose and the merge
+        // streak belongs to the finished round only
         hint.value = null
+        combo.value = 0
         roundResult.value = d
         state.value = 'summary'
         if (d.standings) players.value = d.standings
@@ -181,6 +183,8 @@ export function useRoom() {
   function leave() {
     stopTimer()
     sock?.close()
+    hint.value = null
+    combo.value = 0
     state.value = 'closed'
   }
 

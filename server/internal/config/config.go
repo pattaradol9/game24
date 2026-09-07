@@ -3,12 +3,21 @@
 package config
 
 import (
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/joho/godotenv"
 )
+
+// adcEnv is the one variable for which a .env value takes precedence over
+// the inherited environment. The ADC key-file path is developer-local wiring
+// that belongs next to the code, while shell profiles routinely export a
+// value for some unrelated project; cloud runtimes never set it (they attach
+// a service account instead). Empty or commented .env entries fall back to
+// the inherited environment.
+const adcEnv = "GOOGLE_APPLICATION_CREDENTIALS"
 
 type Config struct {
 	Port                       string
@@ -18,6 +27,7 @@ type Config struct {
 	SecretManagerEncryptionKey string // Secret Manager ref; when set, fetched key overrides EncryptionKey
 	GoogleClientID             string
 	AdminEmails                []string // allowlist guarding /api/v1/admin/*; empty = admin API disabled
+	PublicBaseURL              string   // canonical site origin (https://example.com); empty = derive per-request from Host
 }
 
 func Load() Config {
@@ -30,6 +40,7 @@ func Load() Config {
 		SecretManagerEncryptionKey: os.Getenv("SECRETMANAGER_ENCRYPTION_KEY"),
 		GoogleClientID:             os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
 		AdminEmails:                splitEmails(os.Getenv("ADMIN_EMAILS")),
+		PublicBaseURL:              normalizeBaseURL(os.Getenv("PUBLIC_URL")),
 	}
 }
 
@@ -43,16 +54,49 @@ func env(key, fallback string) string {
 // loadDotenv reads .env from the working directory, then from the parent
 // directories (the repo root when running via "make dev" or
 // "cd server && go run"). First match wins; real environment variables
-// always override file values, so deploying with plain env vars still works.
+// always override file values — except adcEnv, where a non-empty file value
+// wins — so deploying with plain env vars still works.
 func loadDotenv() {
 	for _, dir := range []string{".", "..", "../.."} {
 		path := filepath.Join(dir, ".env")
 		if _, err := os.Stat(path); err != nil {
 			continue
 		}
-		_ = godotenv.Load(path)
+		envMap, err := godotenv.Read(path)
+		if err != nil {
+			log.Printf("config: ignoring unparsable %s: %v", path, err)
+			return
+		}
+		for key, value := range envMap {
+			if key == adcEnv {
+				if value != "" {
+					_ = os.Setenv(key, expandHome(value))
+				}
+				continue
+			}
+			if _, inherited := os.LookupEnv(key); !inherited {
+				_ = os.Setenv(key, value)
+			}
+		}
 		return
 	}
+}
+
+// expandHome resolves a leading "~" or "~/" against the user's home
+// directory; .env values never pass through a shell, so a tilde would
+// otherwise reach the Google SDK as a literal path that does not exist.
+func expandHome(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return p
+	}
+	if p == "~" {
+		return home
+	}
+	return filepath.Join(home, p[2:])
 }
 
 func splitCSV(s string) []string {
@@ -81,4 +125,16 @@ func splitEmails(s string) []string {
 		}
 	}
 	return out
+}
+
+// normalizeBaseURL keeps only a valid http(s) origin without a trailing
+// slash; anything else (including an empty value) means "derive the base
+// URL from each request's Host header".
+func normalizeBaseURL(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(s, "/")
+	if s == "" || !(strings.HasPrefix(s, "http://") || strings.HasPrefix(s, "https://")) {
+		return ""
+	}
+	return s
 }

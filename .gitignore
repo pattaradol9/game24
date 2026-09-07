@@ -1,5 +1,6 @@
 # build artifacts
 web/dist/
+web/dev-dist/
 web/node_modules/
 server/internal/webui/dist/*
 !server/internal/webui/dist/.gitkeep
