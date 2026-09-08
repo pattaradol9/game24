@@ -7,7 +7,7 @@ export const OPERATOR = {
   name: '24 Game',
   contactEmail: 'contact@example.com',
   siteUrl: 'https://your-domain.example',
-  updated: '2026-09-07',
+  updated: '2026-09-08',
 }
 
 export function legalDoc(doc, lang) {
@@ -101,7 +101,8 @@ const privacy = {
       title: 'การเก็บรักษาและการลบข้อมูล',
       body: [
         { p: 'เราเก็บข้อมูลของคุณตราบใดที่บันทึกผู้เล่นของคุณยังอยู่ในระบบ ผู้เล่นชั่วคราวสามารถล้างข้อมูลฝั่งอุปกรณ์ได้ด้วยการเคลียร์ข้อมูลเว็บไซต์ในเบราว์เซอร์' },
-        { p: 'คุณขอให้เราลบบัญชีของคุณได้ทางอีเมลด้านล่าง การลบจะลบโปรไฟล์ สถิติ และประวัติการเล่นทั้งหมดอย่างถาวรและไม่สามารถกู้คืนได้ นอกจากนี้เราอาจลบบันทึกผู้เล่นชั่วคราวที่ไม่มีการใช้งานเป็นเวลานานออกจากระบบ' },
+        { p: 'หากคุณล็อกอินด้วย Google คุณสามารถลบบัญชีของคุณเองได้ทันทีจากเมนูโปรไฟล์ (ในเมนูโปรไฟล์ เลือก “ลบบัญชีถาวร”) เมื่อยืนยันแล้ว การลบเกิดขึ้นทันที ถาวร และไม่สามารถกู้คืนได้ — ระบบจะลบโปรไฟล์ ชื่อเล่น อีเมลที่ผูกไว้ EXP เลเวล เหรียญ ความสำเร็จ สกินการ์ด สถิติทุกโหมด และประวัติการเล่นทั้งหมด พร้อมยกเลิกเซสชันการล็อกอินทั้งหมดของบัญชีนั้น หากคุณล็อกอินด้วย Google ซ้ำหลังลบ จะเริ่มต้นเป็นบัญชีใหม่ที่ว่างเปล่า' },
+        { p: 'ผู้เล่นชั่วคราวไม่สามารถลบบัญชีเองได้ หากต้องการให้ลบข้อมูล ให้ล็อกอินด้วย Google แล้วลบจากเมนูโปรไฟล์ หรือขอให้เราลบแทนได้ทางอีเมลด้านล่าง นอกจากนี้เราอาจลบบันทึกผู้เล่นชั่วคราวที่ไม่มีการใช้งานเป็นเวลานานออกจากระบบ' },
       ],
     },
     {
@@ -111,7 +112,7 @@ const privacy = {
           'เลือกเล่นแบบผู้เล่นชั่วคราว — เราจะไม่เก็บอะไรมากไปกว่าชื่อเล่น',
           'เปลี่ยนชื่อเล่นได้ตลอดเวลาจากเมนูโปรไฟล์',
           'ออกจากระบบเพื่อล้างเซสชันในเครื่องของคุณ',
-          'ขอเข้าถึง ขอสำเนา หรือขอลบข้อมูลของคุณ',
+          'ลบบัญชีและข้อมูลทั้งหมดของคุณด้วยตัวเองได้ทันทีจากเมนูโปรไฟล์ (ดูหัวข้อ “การเก็บรักษาและการลบข้อมูล”) หรือขอเข้าถึง/ขอสำเนาข้อมูลผ่านอีเมล',
           'ปฏิเสธหรือบล็อก Google Analytics ได้ตลอดเวลา (ดูหัวข้อ “การวิเคราะห์การใช้งาน”)',
           'ถอนความยินยอมได้ตลอดเวลาโดยหยุดใช้บริการ',
         ] },
@@ -222,7 +223,8 @@ const privacy = {
       title: 'Retention & deletion',
       body: [
         { p: 'We keep your data for as long as your player record exists. Guests can clear the device-side data by clearing this site’s data in their browser.' },
-        { p: `You can ask us to delete your account via the email below. Deletion permanently removes your profile, statistics and round history, and cannot be undone. We may also remove long-inactive guest records.` },
+        { p: 'If you signed in with Google, you can delete your own account at any time from the profile menu (open the profile menu and choose “Delete account”). Once confirmed, deletion is immediate, permanent and irreversible — it erases your profile, nickname, linked email, EXP, level, coins, achievements, card skins, per-mode stats and your entire round history, and signs the account out everywhere. Signing in again with the same Google account afterwards starts a fresh, empty account.' },
+        { p: 'Guest accounts cannot self-delete — sign in with Google and use the menu, or ask us to delete your data via the email below. We may also remove long-inactive guest records.' },
       ],
     },
     {
@@ -232,7 +234,7 @@ const privacy = {
           'Play as a guest — we collect nothing beyond your nickname.',
           'Change your nickname at any time from the profile menu.',
           'Sign out to clear the session stored on your device.',
-          'Request access to, a copy of, or deletion of your data.',
+          'Delete your account and all of your data yourself, at any time, from the profile menu (see “Retention & deletion”) — or request access to or a copy of your data via email.',
           'Opt out of or block Google Analytics at any time (see “Analytics”).',
           'Withdraw consent at any time by stopping your use of the Service.',
         ] },
@@ -293,6 +295,7 @@ const terms = {
         { ul: [
           'คุณสามารถเล่นแบบผู้เล่นชั่วคราว (ใช้แค่ชื่อเล่น ไม่บันทึกสถิติ) หรือล็อกอินด้วย Google',
           'บัญชีผู้เล่นหนึ่งบัญชีต่อหนึ่งคน คุณรับผิดชอบกิจกรรมที่เกิดขึ้นภายใต้เซสชันของคุณ และควรเก็บโทเคนเซสชันของคุณให้ปลอดภัย',
+          'หากล็อกอินด้วย Google คุณสามารถลบบัญชีของคุณเองได้ตลอดเวลาจากเมนูโปรไฟล์ (ผู้เล่นชั่วคราวลบบัญชีเองไม่ได้) การลบเป็นการลบถาวรที่กู้คืนไม่ได้ — โปรไฟล์ EXP เลเวล เหรียญ ความสำเร็จ สกินการ์ด และประวัติการเล่นทั้งหมดจะถูกลบออก และเหรียญหรือไอเทมที่ยังไม่ได้ใช้จะสูญหายโดยไม่มีการชดใช้',
           'ห้ามตั้งชื่อเล่นที่ไม่เหมาะสม หยาบคาย ลอกเลียนแบบผู้อื่น หรือละเมิดสิทธิ์ของผู้อื่น',
           'เราอาจเปลี่ยนชื่อเล่นของบัญชีที่ใช้ชื่อไม่เหมาะสม',
         ] },
@@ -394,6 +397,7 @@ const terms = {
         { ul: [
           'You may play as a guest (nickname only, no saved stats) or sign in with Google.',
           'One player account per person. You are responsible for activity under your session and should keep your session token private.',
+          'If you signed in with Google, you may delete your own account at any time from the profile menu (guest accounts cannot self-delete). Deletion is permanent and irreversible — your profile, EXP, level, coins, achievements, card skins and entire play history are erased, and any unused coins or items are forfeited without compensation.',
           'Do not choose a nickname that is offensive, impersonates others, or infringes anyone’s rights.',
           'We may rename accounts that use inappropriate nicknames.',
         ] },

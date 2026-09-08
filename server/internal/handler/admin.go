@@ -1,10 +1,14 @@
 // Admin portal API: dashboard overview, player administration (view, ban,
-// unban, delete, rename, EXP adjustment, stat resets), full leaderboards,
-// round listings and the event log. Everything is mounted under /admin and
-// guarded by an email allowlist: admins sign in with Google like any player
-// and their session token unlocks the admin API only while their Google
-// email is on ADMIN_EMAILS. An empty allowlist disables the whole group
-// (404) — fail closed.
+// unban, delete, rename, EXP/coin overrides, stat resets, achievement
+// grants/revocations), the server-wide EXP boost (config, arm, stop), full
+// leaderboards, round listings and the event log.
+// Everything is mounted under /admin and guarded by an email allowlist:
+// admins sign in with Google like any player and their session token unlocks
+// the admin API only while their Google email is on ADMIN_EMAILS. An empty
+// allowlist disables the whole group (404) — fail closed. Every player-facing
+// mutation also pushes a fresh profile snapshot through the player's live
+// /ws/player sockets, so adjustments land without a page refresh; boost
+// changes broadcast to every connected player at once.
 package handler
 
 import (
@@ -12,14 +16,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/pattaradol9/game24/server/internal/achv"
 	"github.com/pattaradol9/game24/server/internal/game"
 	"github.com/pattaradol9/game24/server/internal/progress"
 	"github.com/pattaradol9/game24/server/internal/store"
@@ -69,14 +77,25 @@ func (a *API) adminRoutes(r chi.Router) {
 	r.Get("/players/{id}", a.adminPlayerDetail)
 	r.Patch("/players/{id}", a.adminPlayerPatch)
 	r.Delete("/players/{id}", a.adminPlayerDelete)
-	r.Post("/players/{id}/exp", a.adminAdjustEXP)
+	r.Post("/players/{id}/exp", a.adminSetEXP)
 	r.Post("/players/{id}/stats/reset", a.adminResetStats)
 	r.Get("/players/{id}/rounds", a.adminPlayerRounds)
+	r.Post("/players/{id}/coins", a.adminSetCoins)
+	r.Post("/players/{id}/tier", a.adminSetTier)
+	r.Post("/players/{id}/achievements/grant", a.adminGrantAchievement)
+	r.Post("/players/{id}/achievements/revoke", a.adminRevokeAchievement)
 	r.Get("/leaderboard", a.adminLeaderboard)
 	r.Get("/rounds", a.adminRounds)
 	r.Get("/events", a.adminEvents)
+	r.Get("/boosts", a.adminBoostsList)
+	r.Get("/boosts/{kind}", a.adminBoostGet)
+	r.Put("/boosts/{kind}", a.adminBoostPut)
+	r.Post("/boosts/{kind}/enable", a.adminBoostEnable)
+	r.Post("/boosts/{kind}/disable", a.adminBoostDisable)
 	r.Get("/settings", a.adminSettings)
 	r.Get("/db/backup", a.adminDbBackup)
+	r.Get("/db/backups", a.adminDbBackups)
+	r.Post("/db/restore", a.adminDbRestore)
 	r.Post("/db/reset", a.adminDbReset)
 }
 
@@ -91,8 +110,10 @@ type adminPlayerJSON struct {
 	Banned       bool                    `json:"banned"`
 	BanReason    string                  `json:"banReason,omitempty"`
 	TotalExp     int64                   `json:"totalExp"`
+	TotalCoins   int64                   `json:"totalCoins"`
 	Level        int64                   `json:"level"`
 	Tier         string                  `json:"tier"`
+	TierOverride bool                    `json:"tierOverride,omitempty"`
 	HandsSolved  int64                   `json:"handsSolved"`
 	HandsSkipped int64                   `json:"handsSkipped"`
 	CreatedAt    string                  `json:"createdAt"`
@@ -100,12 +121,25 @@ type adminPlayerJSON struct {
 	PerMode      map[string]modeStatJSON `json:"perMode,omitempty"`
 }
 
+// tierOf resolves the display tier: the admin override when present,
+// otherwise the tier derived from the level. The bool reports an override.
+func tierOf(lv int64, override string) (string, bool) {
+	if override != "" {
+		if t, ok := progress.TierFromName(override); ok {
+			return progress.TierName(t), true
+		}
+	}
+	return progress.TierName(progress.TierFromLevel(lv)), false
+}
+
 func adminPlayerCore(p store.Player) adminPlayerJSON {
 	lv, _, _ := progress.LevelProgress(p.TotalExp)
+	tier, overridden := tierOf(lv, p.Tier)
 	return adminPlayerJSON{
 		ID: p.ID, Nickname: p.Nickname, Email: p.Email, Picture: p.Picture,
 		IsGuest: p.IsGuest, Banned: p.Banned, BanReason: p.BanReason,
-		TotalExp: p.TotalExp, Level: lv, Tier: progress.TierName(progress.TierFromLevel(lv)),
+		TotalExp: p.TotalExp, TotalCoins: p.TotalCoins,
+		Level: lv, Tier: tier, TierOverride: overridden,
 		CreatedAt:  p.CreatedAt.UTC().Format(time.RFC3339),
 		LastSeenAt: p.LastSeen.UTC().Format(time.RFC3339),
 	}
@@ -125,14 +159,56 @@ func adminPlayerFull(p store.Player) adminPlayerJSON {
 
 func adminPlayerRowJSON(r store.AdminPlayerRow) adminPlayerJSON {
 	lv, _, _ := progress.LevelProgress(r.TotalExp)
+	tier, overridden := tierOf(lv, r.TierOverride)
 	return adminPlayerJSON{
 		ID: r.ID, Nickname: r.Nickname, Email: r.Email, Picture: r.Picture,
 		IsGuest: r.IsGuest, Banned: r.Banned, BanReason: r.BanReason,
-		TotalExp: r.TotalExp, Level: lv, Tier: progress.TierName(progress.TierFromLevel(lv)),
+		TotalExp: r.TotalExp, TotalCoins: r.TotalCoins,
+		Level: lv, Tier: tier, TierOverride: overridden,
 		HandsSolved: r.HandsSolved, HandsSkipped: r.HandsSkipped,
 		CreatedAt:  r.CreatedAt.UTC().Format(time.RFC3339),
 		LastSeenAt: r.LastSeen.UTC().Format(time.RFC3339),
 	}
+}
+
+// adminAchievementJSON is one unlocked achievement in a player's detail
+// view: catalog facts plus the unlock timestamp (RFC3339, UTC).
+type adminAchievementJSON struct {
+	ID         string   `json:"id"`
+	Tier       string   `json:"tier"`
+	Title      textJSON `json:"title"`
+	ExpReward  int64    `json:"expReward"`
+	CoinReward int64    `json:"coinReward"`
+	UnlockedAt string   `json:"unlockedAt"`
+}
+
+// adminPlayerAchievements joins the player's unlock timestamps with the
+// catalog, newest unlock first.
+func adminPlayerAchievements(unlocked map[string]string) []adminAchievementJSON {
+	out := make([]adminAchievementJSON, 0, len(unlocked))
+	for id, ts := range unlocked {
+		def, ok := achv.ByID(id)
+		if !ok {
+			continue // catalog entry retired; keep the rest viewable
+		}
+		unlockedAt := ts
+		if t, err := time.Parse("2006-01-02 15:04:05", ts); err == nil {
+			unlockedAt = t.UTC().Format(time.RFC3339)
+		}
+		out = append(out, adminAchievementJSON{
+			ID: def.ID, Tier: string(def.Tier),
+			Title:     textJSON{En: def.Title.En, Th: def.Title.Th},
+			ExpReward: def.ExpReward, CoinReward: def.CoinReward,
+			UnlockedAt: unlockedAt,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].UnlockedAt != out[j].UnlockedAt {
+			return out[i].UnlockedAt > out[j].UnlockedAt
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
 }
 
 type adminRoundJSON struct {
@@ -215,7 +291,8 @@ func (a *API) adminPlayers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) adminPlayerDetail(w http.ResponseWriter, r *http.Request) {
-	p, err := a.Store.PlayerByID(chi.URLParam(r, "id"))
+	id := chi.URLParam(r, "id")
+	p, err := a.Store.PlayerByID(id)
 	if errors.Is(err, store.ErrNotFound) {
 		fail(w, http.StatusNotFound, "player not found")
 		return
@@ -224,11 +301,21 @@ func (a *API) adminPlayerDetail(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	ok(w, map[string]any{"player": adminPlayerFull(p)})
+	unlocked, err := a.Store.PlayerAchievements(id)
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(w, map[string]any{
+		"player":       adminPlayerFull(p),
+		"achievements": adminPlayerAchievements(unlocked),
+	})
 }
 
 // adminPlayerPatch applies partial updates: nickname (admin rename) and/or
-// ban state. banned=true records an optional reason (max 200 chars).
+// ban state. banned=true records an optional reason (max 200 chars). An
+// admin can never ban their own account — the portal would lock them out
+// with no one left to lift it.
 func (a *API) adminPlayerPatch(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var body struct {
@@ -244,14 +331,26 @@ func (a *API) adminPlayerPatch(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, "nothing to update")
 		return
 	}
-	var current store.Player
+	if body.Banned != nil && *body.Banned {
+		if actor, ok := playerOf(r); ok && actor.ID == id {
+			fail(w, http.StatusBadRequest, "cannot ban your own admin account")
+			return
+		}
+	}
+	var (
+		current        store.Player
+		bannedNow      bool
+		banReasonValue string
+	)
 	if body.Banned != nil {
 		reason := ""
 		if body.BanReason != nil {
 			reason = sanitizeBanReason(*body.BanReason)
 		}
+		bannedNow = *body.Banned
+		banReasonValue = reason
 		var err error
-		if current, err = a.Store.SetPlayerBanned(actorOf(r), id, *body.Banned, reason); errors.Is(err, store.ErrNotFound) {
+		if current, err = a.Store.SetPlayerBanned(actorOf(r), id, bannedNow, reason); errors.Is(err, store.ErrNotFound) {
 			fail(w, http.StatusNotFound, "player not found")
 			return
 		} else if err != nil {
@@ -274,6 +373,14 @@ func (a *API) adminPlayerPatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// a ban lands as its own terminal event (reason included) so the
+	// player's open tabs throw the ban dialog; everything else is a plain
+	// profile push
+	if bannedNow {
+		a.notifyPlayerBanned(id, banReasonValue)
+	} else {
+		a.notifyPlayer(current)
+	}
 	ok(w, map[string]any{"player": adminPlayerFull(current)})
 }
 
@@ -290,22 +397,25 @@ func sanitizeBanReason(s string) string {
 }
 
 func (a *API) adminPlayerDelete(w http.ResponseWriter, r *http.Request) {
-	if err := a.Store.DeletePlayer(actorOf(r), chi.URLParam(r, "id")); errors.Is(err, store.ErrNotFound) {
+	id := chi.URLParam(r, "id")
+	if err := a.Store.DeletePlayer(actorOf(r), id); errors.Is(err, store.ErrNotFound) {
 		fail(w, http.StatusNotFound, "player not found")
 		return
 	} else if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// the player's open tabs drop the dead session immediately
+	a.notifyPlayerDeleted(id)
 	ok(w, map[string]any{"deleted": true})
 }
 
-// adminAdjustEXP grants (positive) or revokes (negative) EXP for one mode;
+// adminSetEXP overwrites one mode's EXP with the requested absolute value;
 // total EXP and the derived level always resync to the per-mode sum.
-func (a *API) adminAdjustEXP(w http.ResponseWriter, r *http.Request) {
+func (a *API) adminSetEXP(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Mode  string `json:"mode"`
-		Delta int64  `json:"delta"`
+		Value int64  `json:"value"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		fail(w, http.StatusBadRequest, "invalid payload")
@@ -315,11 +425,11 @@ func (a *API) adminAdjustEXP(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if body.Delta == 0 {
-		fail(w, http.StatusBadRequest, "delta must not be zero")
+	if body.Value < 0 {
+		fail(w, http.StatusBadRequest, "value must not be negative")
 		return
 	}
-	p, err := a.Store.AdjustPlayerEXP(actorOf(r), chi.URLParam(r, "id"), body.Mode, body.Delta)
+	p, err := a.Store.SetPlayerEXP(actorOf(r), chi.URLParam(r, "id"), body.Mode, body.Value)
 	if errors.Is(err, store.ErrNotFound) {
 		fail(w, http.StatusNotFound, "player not found")
 		return
@@ -328,6 +438,7 @@ func (a *API) adminAdjustEXP(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	a.notifyPlayer(p)
 	ok(w, map[string]any{"player": adminPlayerFull(p)})
 }
 
@@ -356,7 +467,253 @@ func (a *API) adminResetStats(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	a.notifyPlayer(p)
 	ok(w, map[string]any{"player": adminPlayerFull(p)})
+}
+
+// adminSetCoins overwrites the player's coin balance. No achievement
+// cascade here — coin-hold entries re-evaluate on the player's next hand,
+// like every other metric.
+func (a *API) adminSetCoins(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Value int64 `json:"value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		fail(w, http.StatusBadRequest, "invalid payload")
+		return
+	}
+	if body.Value < 0 {
+		fail(w, http.StatusBadRequest, "value must not be negative")
+		return
+	}
+	p, err := a.Store.SetPlayerCoins(actorOf(r), chi.URLParam(r, "id"), body.Value)
+	if errors.Is(err, store.ErrNotFound) {
+		fail(w, http.StatusNotFound, "player not found")
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.notifyPlayer(p)
+	ok(w, map[string]any{"player": adminPlayerFull(p)})
+}
+
+// adminSetTier stores a tier override (empty tier clears it). The override
+// replaces the level-derived tier everywhere: profile display, leaderboards
+// and the tier hint quota.
+func (a *API) adminSetTier(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Tier string `json:"tier"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		fail(w, http.StatusBadRequest, "invalid payload")
+		return
+	}
+	tier := strings.ToLower(strings.TrimSpace(body.Tier))
+	if tier != "" {
+		if _, ok := progress.TierFromName(tier); !ok {
+			fail(w, http.StatusBadRequest, "unknown tier")
+			return
+		}
+	}
+	p, err := a.Store.SetPlayerTier(actorOf(r), chi.URLParam(r, "id"), tier)
+	if errors.Is(err, store.ErrNotFound) {
+		fail(w, http.StatusNotFound, "player not found")
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.notifyPlayer(p)
+	ok(w, map[string]any{"player": adminPlayerFull(p)})
+}
+
+// adminGrantAchievement records an unlock by hand and pays the entry's
+// standard EXP/coin rewards; adminRevokeAchievement removes the unlock while
+// banked rewards stay. Both are wired through one shared implementation.
+func (a *API) adminGrantAchievement(w http.ResponseWriter, r *http.Request) {
+	a.adminAchievementMutation(w, r, true)
+}
+
+func (a *API) adminRevokeAchievement(w http.ResponseWriter, r *http.Request) {
+	a.adminAchievementMutation(w, r, false)
+}
+
+func (a *API) adminAchievementMutation(w http.ResponseWriter, r *http.Request, grant bool) {
+	var body struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		fail(w, http.StatusBadRequest, "invalid payload")
+		return
+	}
+	body.ID = strings.TrimSpace(body.ID)
+	if _, known := achv.ByID(body.ID); !known {
+		fail(w, http.StatusNotFound, "unknown achievement")
+		return
+	}
+	var (
+		p   store.Player
+		err error
+	)
+	if grant {
+		p, err = a.Store.GrantAchievement(actorOf(r), chi.URLParam(r, "id"), body.ID)
+	} else {
+		p, err = a.Store.RevokeAchievement(actorOf(r), chi.URLParam(r, "id"), body.ID)
+	}
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		fail(w, http.StatusNotFound, "player or achievement not found")
+		return
+	case errors.Is(err, store.ErrAlreadyUnlocked):
+		fail(w, http.StatusConflict, "achievement already unlocked")
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.notifyPlayer(p)
+	ok(w, map[string]any{"player": adminPlayerFull(p)})
+}
+
+// --- server-wide boosts (EXP / coin payouts) ---
+
+// adminBoostJSON is one boost row: the admin-authored config (multiplier,
+// duration, label) plus its run state (armed? window? time left?).
+type adminBoostJSON struct {
+	Kind            string  `json:"kind"`
+	Multiplier      float64 `json:"multiplier"`
+	DurationMinutes int     `json:"durationMinutes"`
+	Label           string  `json:"label,omitempty"`
+	Enabled         bool    `json:"enabled"`
+	Active          bool    `json:"active"`
+	StartsAt        string  `json:"startsAt,omitempty"` // RFC3339, UTC
+	EndsAt          string  `json:"endsAt,omitempty"`   // RFC3339, UTC
+	RemainingSec    int64   `json:"remainingSec,omitempty"`
+	UpdatedBy       string  `json:"updatedBy,omitempty"`
+	UpdatedAt       string  `json:"updatedAt,omitempty"`
+}
+
+func adminBoostJSONOf(b store.Boost, active bool, remainingSec int64) adminBoostJSON {
+	out := adminBoostJSON{
+		Kind: string(b.Kind), Multiplier: b.Multiplier, DurationMinutes: b.DurationMin,
+		Label: b.Label, Enabled: b.Enabled, Active: active, UpdatedBy: b.UpdatedBy,
+	}
+	if !b.StartsAt.IsZero() {
+		out.StartsAt = b.StartsAt.UTC().Format(time.RFC3339)
+	}
+	if !b.EndsAt.IsZero() {
+		out.EndsAt = b.EndsAt.UTC().Format(time.RFC3339)
+	}
+	if !b.UpdatedAt.IsZero() {
+		out.UpdatedAt = b.UpdatedAt.UTC().Format(time.RFC3339)
+	}
+	if active {
+		out.RemainingSec = remainingSec
+		if out.RemainingSec < 1 {
+			out.RemainingSec = 1
+		}
+	}
+	return out
+}
+
+// activeBoostJSON resolves one kind's run state for the JSON view.
+func (a *API) activeBoostJSON(kind store.BoostKind) (bool, int64) {
+	ab, active := a.Store.ActiveBoost(kind)
+	if !active {
+		return false, 0
+	}
+	left := int64(time.Until(ab.EndsAt).Seconds())
+	if left < 1 {
+		left = 1
+	}
+	return true, left
+}
+
+// adminBoostsList returns every kind's config and run state — what the
+// Server Boosts page and the portal header's active strip render.
+func (a *API) adminBoostsList(w http.ResponseWriter, _ *http.Request) {
+	all, err := a.Store.AllBoosts()
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	out := make([]adminBoostJSON, 0, len(all))
+	for _, b := range all {
+		active, left := a.activeBoostJSON(b.Kind)
+		out = append(out, adminBoostJSONOf(b, active, left))
+	}
+	ok(w, map[string]any{"boosts": out})
+}
+
+func (a *API) adminBoostGet(w http.ResponseWriter, r *http.Request) {
+	kind := store.BoostKind(chi.URLParam(r, "kind"))
+	b, err := a.Store.BoostState(kind)
+	if errors.Is(err, store.ErrBoostKind) {
+		fail(w, http.StatusNotFound, "unknown boost kind")
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	active, left := a.activeBoostJSON(kind)
+	ok(w, map[string]any{"boost": adminBoostJSONOf(b, active, left)})
+}
+
+// adminBoostPut saves one kind's config (multiplier, duration, label)
+// without arming it — the draft can be prepared days before the event
+// starts. Values out of range → 400.
+func (a *API) adminBoostPut(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Multiplier      float64 `json:"multiplier"`
+		DurationMinutes int     `json:"durationMinutes"`
+		Label           string  `json:"label"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		fail(w, http.StatusBadRequest, "invalid payload")
+		return
+	}
+	b, err := a.Store.SetBoostConfig(actorOf(r), store.BoostKind(chi.URLParam(r, "kind")),
+		body.Multiplier, body.DurationMinutes, strings.TrimSpace(body.Label))
+	a.adminBoostMutationResult(w, b, err)
+}
+
+// adminBoostEnable arms one kind: the window runs from now for the saved
+// duration (re-arming an active boost restarts it).
+func (a *API) adminBoostEnable(w http.ResponseWriter, r *http.Request) {
+	b, err := a.Store.EnableBoost(actorOf(r), store.BoostKind(chi.URLParam(r, "kind")))
+	a.adminBoostMutationResult(w, b, err)
+}
+
+// adminBoostDisable stops one kind immediately; the saved config stays for
+// the next run.
+func (a *API) adminBoostDisable(w http.ResponseWriter, r *http.Request) {
+	b, err := a.Store.DisableBoost(actorOf(r), store.BoostKind(chi.URLParam(r, "kind")))
+	a.adminBoostMutationResult(w, b, err)
+}
+
+// adminBoostMutationResult answers a boost mutation: unknown kinds are a
+// 404, out-of-range values a 400, anything else a 500 — and every success
+// pushes the fresh boost state to all open player sockets so running tabs
+// see it at once.
+func (a *API) adminBoostMutationResult(w http.ResponseWriter, b store.Boost, err error) {
+	switch {
+	case errors.Is(err, store.ErrBoostKind):
+		fail(w, http.StatusNotFound, "unknown boost kind")
+		return
+	case errors.Is(err, store.ErrBoostRange):
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	case err != nil:
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.notifyBoosts()
+	active, left := a.activeBoostJSON(b.Kind)
+	ok(w, map[string]any{"boost": adminBoostJSONOf(b, active, left)})
 }
 
 func (a *API) adminPlayerRounds(w http.ResponseWriter, r *http.Request) {
@@ -402,9 +759,10 @@ func (a *API) adminLeaderboard(w http.ResponseWriter, r *http.Request) {
 	out := make([]rowJSON, 0, len(rows))
 	for i, row := range rows {
 		lv := progress.LevelFromExp(row.Exp)
+		tier, _ := tierOf(lv, row.TierOverride)
 		out = append(out, rowJSON{
 			Rank: offset + i + 1, PlayerID: row.PlayerID, Nickname: row.Nickname,
-			Exp: row.Exp, Level: lv, Tier: progress.TierName(progress.TierFromLevel(lv)),
+			Exp: row.Exp, Level: lv, Tier: tier,
 			HandsSolved: row.HandsSolved, BestStreak: row.BestStreak,
 			IsGuest: row.IsGuest, Banned: row.Banned,
 		})
@@ -473,11 +831,22 @@ func (a *API) adminEvents(w http.ResponseWriter, r *http.Request) {
 // --- settings: database backup & reset ---
 
 // dbBackupPath names the snapshot file written next to the database before
-// (and as part of) a reset, or streamed out as a manual download.
+// (and as part of) a reset or restore, or streamed out as a manual download.
+// Timestamps have one-second resolution, so a same-second collision grows a
+// numeric suffix (-1, -2, …) instead of refusing to snapshot.
 func (a *API) dbBackupPath() string {
 	dir := filepath.Dir(a.Cfg.DBPath)
-	name := fmt.Sprintf("game24-backup-%s.db", time.Now().UTC().Format("20060102-150405"))
-	return filepath.Join(dir, name)
+	base := time.Now().UTC().Format("20060102-150405")
+	for i := 0; ; i++ {
+		name := fmt.Sprintf("game24-backup-%s.db", base)
+		if i > 0 {
+			name = fmt.Sprintf("game24-backup-%s-%d.db", base, i)
+		}
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return path
+		}
+	}
 }
 
 // adminSettings returns what the Settings page shows: row counts and the
@@ -543,6 +912,141 @@ func (a *API) adminDbReset(w http.ResponseWriter, r *http.Request) {
 		"reset":      true,
 		"backupFile": filepath.Base(backupPath),
 		"wiped": map[string]int64{
+			"players": st.Players, "rounds": st.Rounds, "events": st.Events,
+		},
+	})
+}
+
+// --- settings: database restore ---
+
+// backupNameRE constrains restore sources to files the server itself wrote
+// (VACUUM INTO snapshots named by dbBackupPath, including same-second
+// suffixed ones) — no path traversal, no arbitrary file reads from the
+// server's disk.
+var backupNameRE = regexp.MustCompile(`^game24-backup-\d{8}-\d{6}(-\d{1,4})?\.db$`)
+
+// maxRestoreUpload caps the snapshot a browser may push to the restore
+// endpoint — generous for this database's size, tight enough to be irrelevant
+// as an attack surface.
+const maxRestoreUpload = 1 << 30 // 1 GiB
+
+// adminDbBackups lists the safety snapshots sitting next to the database —
+// files written by resets, restores, or a crash-truncated nothing; only the
+// timestamped names the server itself produces are shown.
+func (a *API) adminDbBackups(w http.ResponseWriter, _ *http.Request) {
+	ok(w, map[string]any{"backups": a.listBackups()})
+}
+
+func (a *API) listBackups() []map[string]any {
+	dir := filepath.Dir(a.Cfg.DBPath)
+	matches, _ := filepath.Glob(filepath.Join(dir, "game24-backup-*.db"))
+	sort.Sort(sort.Reverse(sort.StringSlice(matches))) // names sort chronologically
+	out := make([]map[string]any, 0, len(matches))
+	for _, path := range matches {
+		fi, err := os.Stat(path)
+		if err != nil {
+			continue // raced with a delete; skip it
+		}
+		out = append(out, map[string]any{
+			"name":     filepath.Base(path),
+			"size":     fi.Size(),
+			"modified": fi.ModTime().UTC().Format(time.RFC3339),
+		})
+	}
+	return out
+}
+
+// adminDbRestore replaces the live database with a snapshot: a server-side
+// safety backup by name (JSON body {"name", "confirm"}) or an uploaded
+// snapshot file (multipart form: file + confirm). The word RESTORE is
+// required. A safety snapshot of the current data is kept next to the
+// database first; every session the backup does not contain dies with the
+// restore — usually including the acting admin's.
+func (a *API) adminDbRestore(w http.ResponseWriter, r *http.Request) {
+	var confirm, name string
+	var upload multipart.File
+	if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRestoreUpload)
+		if err := r.ParseMultipartForm(32 << 20); err != nil {
+			fail(w, http.StatusBadRequest, "invalid upload")
+			return
+		}
+		confirm = r.FormValue("confirm")
+		name = strings.TrimSpace(r.FormValue("name"))
+		if f, _, err := r.FormFile("file"); err == nil {
+			upload = f
+		}
+	} else {
+		var body struct {
+			Name    string `json:"name"`
+			Confirm string `json:"confirm"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			fail(w, http.StatusBadRequest, "invalid payload")
+			return
+		}
+		confirm, name = body.Confirm, strings.TrimSpace(body.Name)
+	}
+	if confirm != "RESTORE" {
+		fail(w, http.StatusBadRequest, `confirmation required: {"confirm":"RESTORE"}`)
+		return
+	}
+
+	// resolve the source: an uploaded snapshot staged next to the database,
+	// or a server-side safety backup by exact validated name
+	var srcPath string
+	switch {
+	case upload != nil:
+		defer upload.Close()
+		tmp, err := os.CreateTemp(filepath.Dir(a.Cfg.DBPath), "game24-upload-*.db")
+		if err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		defer func() {
+			tmp.Close()
+			os.Remove(tmp.Name()) // the staged copy never outlives the request
+		}()
+		if _, err := io.Copy(tmp, upload); err != nil {
+			fail(w, http.StatusBadRequest, "upload failed")
+			return
+		}
+		srcPath = tmp.Name()
+	case name != "":
+		if !backupNameRE.MatchString(name) {
+			fail(w, http.StatusBadRequest, "unknown backup file")
+			return
+		}
+		path := filepath.Join(filepath.Dir(a.Cfg.DBPath), name)
+		if filepath.Base(path) != name { // belt and braces beside the regexp
+			fail(w, http.StatusBadRequest, "unknown backup file")
+			return
+		}
+		if fi, err := os.Stat(path); err != nil || fi.IsDir() {
+			fail(w, http.StatusNotFound, "backup not found")
+			return
+		}
+		srcPath = path
+	default:
+		fail(w, http.StatusBadRequest, "provide a backup name or an uploaded file")
+		return
+	}
+
+	preRestore := a.dbBackupPath()
+	st, err := a.Store.RestoreFrom(actorOf(r), srcPath, preRestore)
+	if errors.Is(err, store.ErrInvalidBackup) {
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	ok(w, map[string]any{
+		"restored":     true,
+		"backupFile":   filepath.Base(srcPath),
+		"safetyBackup": filepath.Base(preRestore),
+		"restoredRows": map[string]int64{
 			"players": st.Players, "rounds": st.Rounds, "events": st.Events,
 		},
 	})

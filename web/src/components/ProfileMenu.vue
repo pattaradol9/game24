@@ -1,24 +1,37 @@
 <script setup>
 // Header profile menu: shows the current session with rename / google
 // sign-in / logout actions.
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from '../i18n/index.js'
 import { currentPlayer, clearSession } from '../auth.js'
 import { levelProgress, tierName } from '../core/progress.js'
 import { sfx } from '../audio.js'
 import GoogleSignIn from './GoogleSignIn.vue'
 import AnimatedIcon from './AnimatedIcon.vue'
+import DeleteAccountModal from './DeleteAccountModal.vue'
+import Icon from './Icon.vue'
 import PlayerChip from './PlayerChip.vue'
+import ProfileHalo from './ProfileHalo.vue'
 import RenameModal from './RenameModal.vue'
 import TierBadge from './TierBadge.vue'
 import TierAvatar from './TierAvatar.vue'
 
 const { t } = useI18n()
 const emit = defineEmits(['require-name'])
+// direction "up" marks the mobile bottom-bar instance: the menu renders as
+// an app-style bottom sheet, teleported to <body> so it can anchor to the
+// viewport edge and cover the nav with a scrim. A trigger slot replaces the
+// default chip button.
+const props = defineProps({
+  direction: { type: String, default: 'down' }, // "down" | "up"
+})
+const sheet = computed(() => props.direction === 'up')
 
 const open = ref(false)
 const showRename = ref(false)
+const showDelete = ref(false)
 const wrap = ref(null)
+const sheetEl = ref(null)
 const error = ref('')
 
 const player = computed(() => currentPlayer.value)
@@ -47,7 +60,10 @@ function close() {
 }
 
 function onDocClick(e) {
-  if (open.value && wrap.value && !wrap.value.contains(e.target)) close()
+  if (!open.value) return
+  // the teleported sheet lives outside the trigger's subtree — count it in
+  if (wrap.value?.contains(e.target) || sheetEl.value?.contains(e.target)) return
+  close()
 }
 function onKey(e) {
   if (e.key === 'Escape') close()
@@ -59,6 +75,13 @@ onMounted(() => {
 onUnmounted(() => {
   document.removeEventListener('click', onDocClick)
   document.removeEventListener('keydown', onKey)
+  document.body.style.overflow = ''
+})
+
+// an open sheet locks the page behind it, like a native app
+watch(open, (o) => {
+  if (!sheet.value) return
+  document.body.style.overflow = o ? 'hidden' : ''
 })
 
 function logout() {
@@ -68,23 +91,40 @@ function logout() {
   // re-show the entry modal through the parent
   emit('require-name')
 }
+
+// the account is already gone server-side when the modal reports success;
+// behave like a logout so the parent re-opens the entry flow
+function onDeleted() {
+  close()
+  emit('require-name')
+}
 </script>
 
 <template>
-  <div ref="wrap" class="profile">
-    <button v-if="!player" class="btn" @click="$emit('require-name')">
-      <AnimatedIcon name="user" :size="17" />{{ t('profileStart') }}
-    </button>
+  <div ref="wrap" class="profile" :class="{ up: props.direction === 'up' }">
+    <slot name="trigger" :open="open" :toggle="toggle">
+      <!-- default header trigger -->
+      <button v-if="!player" class="btn" @click="$emit('require-name')">
+        <AnimatedIcon name="user" :size="17" />{{ t('profileStart') }}
+      </button>
+      <button v-else class="profile-btn" :class="{ open }" @click="toggle">
+        <PlayerChip />
+        <Icon class="caret" name="chevron-down" :size="14" />
+      </button>
+    </slot>
 
-    <button v-else class="profile-btn" :class="{ open }" @click="toggle">
-      <PlayerChip />
-      <Icon class="caret" name="chevron-down" :size="14" />
-    </button>
-
-    <Transition name="drop">
-      <div v-if="open && player" class="menu">
-        <div class="hero">
-          <div class="avatar-wrap">
+    <!-- the mobile sheet teleports to <body>: a scrim dims the page and the
+         menu rises from the bottom edge, above the nav bar -->
+    <Teleport to="body" :disabled="!sheet">
+      <Transition name="fade">
+        <div v-if="sheet && open && player" class="scrim" @click="close()" />
+      </Transition>
+      <Transition :name="sheet ? 'sheet' : 'drop'">
+        <div v-if="open && player" class="menu" :class="{ 'sheet-menu': sheet }" ref="sheetEl">
+          <span v-if="sheet" class="grab" aria-hidden="true" />
+          <div class="hero">
+            <ProfileHalo v-if="sheet" class="hero-halo" />
+            <div class="avatar-wrap">
             <TierAvatar
               :tier="tier"
               :src="player.picture"
@@ -113,6 +153,10 @@ function logout() {
             <span>{{ prog ? `${fmt(prog.into)} / ${fmt(prog.forNext)}` : '—' }}</span>
             <span class="total">EXP {{ fmt(player.totalExp) }}</span>
           </div>
+          <div v-if="!player.isGuest" class="statrow">
+            <span class="coin-label"><Icon name="coin" :size="17" />{{ t('coins') }}</span>
+            <span class="total num">{{ fmt(player.totalCoins ?? 0) }}</span>
+          </div>
         </div>
 
         <div class="actions">
@@ -121,25 +165,44 @@ function logout() {
             <span class="lbl">{{ t('profileRename') }}</span>
             <AnimatedIcon class="go" name="chevron-right" :size="14" />
           </button>
+          <RouterLink v-if="!player.isGuest" class="item" to="/achievements" @click="close()">
+            <span class="ic"><Icon name="trophy" :size="15" /></span>
+            <span class="lbl">{{ t('achievements') }}</span>
+            <Icon class="go" name="chevron-right" :size="14" />
+          </RouterLink>
+          <RouterLink v-if="!player.isGuest" class="item" to="/skins" @click="close()">
+            <span class="ic"><Icon name="palette" :size="15" /></span>
+            <span class="lbl">{{ t('skinShop') }}</span>
+            <Icon class="go" name="chevron-right" :size="14" />
+          </RouterLink>
           <button v-if="player.isAdmin" class="item admin" @click="close(); $router.push('/admin')">
             <span class="ic"><AnimatedIcon name="crown" :size="15" /></span>
             <span class="lbl">{{ t('profileAdmin') }}</span>
             <AnimatedIcon class="go" name="chevron-right" :size="14" />
           </button>
           <div v-if="player.isGuest" class="gsi-wrap">
-            <GoogleSignIn fit-width @signed-in="close()" />
+            <p class="guest-hint">{{ t('guestMenuHint') }}</p>
+            <GoogleSignIn @signed-in="close()" />
           </div>
           <button v-else class="item danger" @click="logout">
             <span class="ic"><AnimatedIcon name="logout" :size="15" /></span>
             <span class="lbl">{{ t('profileLogout') }}</span>
             <AnimatedIcon class="go" name="chevron-right" :size="14" />
           </button>
+          <div v-if="!player.isGuest" class="menu-sep" />
+          <button v-if="!player.isGuest" class="item danger" @click="showDelete = true; close()">
+            <span class="ic"><Icon name="trash" :size="15" /></span>
+            <span class="lbl">{{ t('profileDelete') }}</span>
+            <Icon class="go" name="chevron-right" :size="14" />
+          </button>
           <p v-if="error" class="err">{{ error }}</p>
         </div>
       </div>
-    </Transition>
+      </Transition>
+    </Teleport>
 
     <RenameModal v-if="showRename" @close="showRename = false" />
+    <DeleteAccountModal v-if="showDelete" @deleted="onDeleted" @close="showDelete = false" />
   </div>
 </template>
 
@@ -195,6 +258,51 @@ function logout() {
   transform-origin: top right;
   z-index: 80;
 }
+/* mobile app-style bottom sheet (the up variant): teleported to <body> and
+   anchored to the viewport's bottom edge, rising over the nav bar behind a
+   scrim — no transform centring, the slide-up animation owns the transform */
+.menu.sheet-menu {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  top: auto;
+  width: auto;
+  max-width: none;
+  margin: 0;
+  max-height: 86vh;
+  overflow-y: auto;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  border-bottom: 0;
+  padding-bottom: calc(12px + env(safe-area-inset-bottom));
+  transform-origin: bottom center;
+  z-index: 201;
+}
+.scrim {
+  position: fixed;
+  inset: 0;
+  background: rgba(4, 6, 10, 0.62);
+  z-index: 200;
+}
+.fade-enter-active, .fade-leave-active { transition: opacity 0.22s var(--ease); }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
+.sheet-enter-active { animation: sheet-up 0.34s var(--ease-out-back); }
+.sheet-leave-active { transition: transform 0.2s var(--ease), opacity 0.2s var(--ease); }
+.sheet-leave-to { transform: translateY(100%); opacity: 0.4; }
+
+/* the sheet's pull handle */
+.grab {
+  display: block;
+  width: 38px;
+  height: 4px;
+  margin: 10px auto 0;
+  border-radius: var(--r-full);
+  background: var(--surface-3);
+}
+
+/* golden particle stage behind the avatar */
+.hero-halo { z-index: 0; }
+
 /* warm light spilling from the top edge */
 .menu::before {
   content: '';
@@ -314,6 +422,7 @@ function logout() {
   font-variant-numeric: tabular-nums;
 }
 .total { color: var(--text-dim); }
+.coin-label { display: inline-flex; align-items: center; gap: 5px; color: var(--accent); }
 
 /* ---------- actions ---------- */
 .actions {
@@ -329,6 +438,7 @@ function logout() {
   align-items: center;
   gap: 11px;
   text-align: left;
+  text-decoration: none;
   border: 0;
   background: transparent;
   color: var(--text);
@@ -362,11 +472,18 @@ function logout() {
 .item.danger .lbl { color: var(--bad); }
 @media (hover: hover) { .item.danger:hover .ic { background: rgba(239, 95, 95, 0.22); color: var(--bad); } }
 .gsi-wrap {
-  display: grid;
-  place-items: center;
-  /* 40px button + 8px vertical padding = 48px, matching .item rows */
-  padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 6px 4px 4px;
 }
+.guest-hint {
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--text-mute);
+  text-align: center;
+}
+.menu-sep { height: 1px; background: var(--line-soft); margin: 6px 8px; }
 .err { color: var(--bad); font-size: 0.8rem; padding: 0 4px 2px; }
 
 /* ---------- transition ---------- */
@@ -377,4 +494,10 @@ function logout() {
 }
 .drop-leave-active { transition: opacity 0.12s var(--ease), transform 0.12s var(--ease); }
 .drop-leave-to { opacity: 0; transform: translateY(-4px) scale(0.98); }
+
+/* the mobile bottom sheet rises from the viewport's bottom edge */
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
 </style>

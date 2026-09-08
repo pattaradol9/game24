@@ -20,19 +20,30 @@ import { currentPlayer, getPlayer } from '../auth.js'
 import NicknameModal from '../components/NicknameModal.vue'
 import RenameModal from '../components/RenameModal.vue'
 
-const { t } = useI18n()
+const { t, lang } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const room = useRoom()
 const {
   state, you, players, config, roundNo, totalRounds,
   numbers, remaining, timeLimit, hand, roundResult, matchResult, hint, intro,
-  wrongFlash, error, isHost, combo, hostDeadline,
+  wrongFlash, error, isHost, combo, hostDeadline, achievementPops,
 } = room
 
 const myWins = computed(() => players.value.find((p) => p.id === you.value)?.wins ?? 0)
 const myHints = computed(() => players.value.find((p) => p.id === you.value)?.hintsLeft ?? 0)
 const myRegens = computed(() => players.value.find((p) => p.id === you.value)?.regensLeft ?? 0)
+
+// achievement toast styling; the server pushes these after a round win
+const ACH_TIERS = {
+  bronze: '#cd7f32',
+  silver: '#c0c0c0',
+  gold: '#ffd700',
+  platinum: '#7de3e1',
+  legend: '#b283f0',
+}
+const achTierColor = (tier) => ACH_TIERS[String(tier || '').toLowerCase()] ?? ACH_TIERS.bronze
+const achTitle = (a) => a.title?.[lang.value] ?? a.title?.en ?? a.id
 // no session yet (direct room link in a fresh browser): ask for a name first
 const needName = ref(!getPlayer())
 const showRename = ref(false)
@@ -181,6 +192,7 @@ const mmss = computed(() =>
           :disabled="intro"
           :hint-data="hint"
           :dealing="hand.cards.length === 4 && hand.cards.every((c) => c.id.startsWith('c')) && combo === 0 && hand.steps.length === 0"
+          :skin="currentPlayer?.skin"
           @pick="room.pickCard"
           @op="room.setOperator"
         />
@@ -217,6 +229,20 @@ const mmss = computed(() =>
     <Countdown v-if="intro && state === 'round'" @done="room.introDone" />
     <RoundSummary :show="state === 'summary'" :result="roundResult" :round-no="roundNo" />
     <FinalPodium :show="state === 'finished'" :standings="matchResult" @home="backHome" />
+
+    <!-- achievements unlocked by winning a round: stacked self-dismissing
+         toasts, always non-blocking (they may land over a round summary) -->
+    <div class="ach-toasts" aria-live="polite">
+      <TransitionGroup name="achtoast">
+        <div v-for="a in achievementPops" :key="a.key" class="ach-toast" :style="{ '--tc': achTierColor(a.tier) }">
+          <Icon class="ach-ic" name="trophy" :size="18" />
+          <span class="ach-txt">
+            <span class="ach-label">{{ t('achievementUnlocked') }}</span>
+            <b class="ach-name">{{ achTitle(a) }}</b>
+          </span>
+        </div>
+      </TransitionGroup>
+    </div>
 
     <!-- no <Transition>: leave animations never finish in background tabs
          (rendering is frozen, so transitionend never fires) and the dialog
@@ -342,6 +368,40 @@ const mmss = computed(() =>
 .wait-panel h2 { font-size: 1.15rem; font-weight: 500; }
 .wait-body { color: var(--text-dim); font-size: 0.9rem; line-height: 1.5; }
 .wait-count { color: var(--accent); font-weight: 600; }
+
+/* ---------- achievement toasts (non-blocking) ---------- */
+.ach-toasts {
+  position: fixed;
+  top: calc(14px + env(safe-area-inset-top));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  width: min(340px, calc(100vw - 32px));
+}
+.ach-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--tc) 50%, transparent);
+  background: var(--surface-2);
+  border-radius: var(--r-md);
+  box-shadow: var(--sh-2);
+  padding: 10px 14px;
+}
+.ach-ic { color: var(--tc); flex: none; }
+.ach-txt { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.ach-label { font-size: 0.66rem; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--tc); }
+.ach-name { font-size: 0.9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.achtoast-enter-active { animation: rise-in 0.28s var(--ease-out-back); }
+.achtoast-leave-active { transition: opacity 0.3s var(--ease), transform 0.3s var(--ease); }
+.achtoast-leave-to { opacity: 0; transform: translateY(-10px); }
+.achtoast-move { transition: transform 0.3s var(--ease); }
 
 @media (max-width: 900px) {
   .room { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }

@@ -58,6 +58,25 @@ func (c *conn) Deliver(raw []byte) {
 
 func (c *conn) CloseConn() { c.once.Do(func() { go c.ws.Close() }) }
 
+// CheckOrigin reports whether an upgrade request's Origin may connect.
+// Same host — the SPA served by this binary — is always allowed; anything
+// else must be on the configured CORS origin list.
+func CheckOrigin(req *http.Request, allowed []string) bool {
+	origin := req.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	if u, err := url.Parse(origin); err == nil && u.Host == req.Host {
+		return true
+	}
+	for _, o := range allowed {
+		if o == origin {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	code := chi.URLParam(r, "code")
 	rm, err := h.hub.Get(code)
@@ -67,20 +86,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	upgrader := websocket.Upgrader{
 		CheckOrigin: func(req *http.Request) bool {
-			origin := req.Header.Get("Origin")
-			if origin == "" {
-				return true
-			}
-			// same host (SPA served by this binary) is always allowed
-			if u, err := url.Parse(origin); err == nil && u.Host == req.Host {
-				return true
-			}
-			for _, o := range h.allowedOrigins {
-				if o == origin {
-					return true
-				}
-			}
-			return false
+			return CheckOrigin(req, h.allowedOrigins)
 		},
 	}
 	raw, err := upgrader.Upgrade(w, r, nil)
@@ -155,10 +161,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			info := room.Info{SessionID: newSession(), Name: name, HostKey: jd.HostKey, Resume: jd.Resume}
 			if jd.Token != "" {
 				if p, err := h.store.PlayerByToken(jd.Token); err == nil && !p.IsGuest {
-					lv := progress.LevelFromExp(p.TotalExp)
 					info.DBID = p.ID
-					info.Level = lv
-					info.Tier = progress.TierName(progress.TierFromLevel(lv))
+					info.Level = progress.LevelFromExp(p.TotalExp)
+					info.Tier = progress.TierName(p.EffectiveTier())
 				}
 			}
 			// the seat may be a resumed one — report its id, not the

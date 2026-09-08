@@ -25,6 +25,26 @@ function pick() {
   if (!props.selectable) return
   emit('pick', props.card)
 }
+
+/* Holographic foil: premium skins paint the .holo layer in skins.css and it
+   tracks the pointer through --mx/--my. Only fine pointers get the follow —
+   touch and reduced-motion fall back to the static sheen CSS provides. */
+const canTrack =
+  typeof matchMedia !== 'undefined' &&
+  matchMedia('(hover: hover) and (pointer: fine)').matches &&
+  !matchMedia('(prefers-reduced-motion: reduce)').matches
+
+function onTrack(e) {
+  if (!canTrack) return
+  const el = e.currentTarget
+  const r = el.getBoundingClientRect()
+  el.style.setProperty('--mx', `${(((e.clientX - r.left) / r.width) * 100).toFixed(1)}%`)
+  el.style.setProperty('--my', `${(((e.clientY - r.top) / r.height) * 100).toFixed(1)}%`)
+}
+function onTrackEnd(e) {
+  e.currentTarget.style.setProperty('--mx', '50%')
+  e.currentTarget.style.setProperty('--my', '50%')
+}
 </script>
 
 <template>
@@ -35,7 +55,10 @@ function pick() {
     :data-card-id="card.id"
     :aria-pressed="selected"
     @click="pick"
+    @pointermove="onTrack"
+    @pointerleave="onTrackEnd"
   >
+    <i class="holo" aria-hidden="true" />
     <span class="frame" aria-hidden="true" />
     <!-- the two indices, mirrored like a real card -->
     <span class="idx tl"><b class="num">{{ card.display }}</b><Suit :name="suit" class="pip" /></span>
@@ -51,17 +74,18 @@ function pick() {
   position: relative;
   width: var(--card-w);
   height: calc(var(--card-w) * 1.45);
-  border: 1px solid #cdd3e3;
+  border: 1px solid var(--skin-border, #cdd3e3);
   border-radius: calc(var(--card-w) * 0.1);
-  /* pressed card stock: warm-white face with a faint sheen off the top edge */
+  /* pressed card stock: warm-white face with a faint sheen off the top edge;
+     skins override the stock via --skin-* (see skins.css) */
   background:
-    linear-gradient(163deg, #ffffff 0%, #fafbfe 46%, #eef0f7 100%);
+    var(--skin-face, linear-gradient(163deg, #ffffff 0%, #fafbfe 46%, #eef0f7 100%));
   box-shadow:
     0 1px 1px rgba(0, 0, 0, 0.3),
     0 10px 24px rgba(0, 0, 0, 0.32),
     inset 0 1px 0 #fff;
   cursor: pointer;
-  color: var(--card-black);
+  color: var(--skin-ink, var(--card-black));
   padding: 0;
   display: grid;
   place-items: center;
@@ -72,7 +96,9 @@ function pick() {
   outline-offset: 2px;
   -webkit-tap-highlight-color: transparent;
 }
-.card.red { color: var(--card-red); }
+.card.red { color: var(--skin-red, var(--card-red)); }
+/* Suit.vue pins its own red for standalone use; inside a card the skin wins */
+.card :deep(.suit.red) { color: var(--skin-red, var(--card-red)); }
 
 /* the printed border every real deck has inside the trim */
 .frame {
@@ -90,7 +116,8 @@ function pick() {
 .card:active:not(.disabled) { transform: translateY(-2px); }
 .card.selected {
   transform: translateY(calc(var(--card-w) * -0.11));
-  outline-color: var(--accent);
+  /* skins tint the selection ring via --skin-glow (skins.css) */
+  outline-color: var(--skin-glow, var(--accent));
   box-shadow:
     0 1px 1px rgba(0, 0, 0, 0.3),
     0 16px 32px rgba(0, 0, 0, 0.42),

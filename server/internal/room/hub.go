@@ -38,8 +38,20 @@ type Config struct {
 	RegenQuota int       `json:"regenQuota"` // base, identical for everyone
 }
 
+// Unlock is one achievement earned by a round win; the room pushes it to
+// the winner's socket after the award callback reports it.
+type Unlock struct {
+	ID         string
+	Tier       string
+	TitleEN    string
+	TitleTH    string
+	ExpReward  int64
+	CoinReward int64
+}
+
 // AwardEXP is called for signed-in round winners: (dbPlayerID, mode, points).
-type AwardEXP func(dbPlayerID string, mode game.Mode, points int64)
+// It returns the achievements unlocked by the win, if any.
+type AwardEXP func(dbPlayerID string, mode game.Mode, points int64) []Unlock
 
 // removeGrace keeps an emptied room around briefly so a page refresh —
 // which drops the websocket and rejoins a moment later — finds it alive.

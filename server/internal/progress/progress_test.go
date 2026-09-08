@@ -60,3 +60,18 @@ func TestLevelProgress(t *testing.T) {
 		t.Fatalf("LevelProgress(120) = lv%d into%d next%d", lv, into, next)
 	}
 }
+
+func TestTierFromName(t *testing.T) {
+	for i := 0; i < numTiers; i++ {
+		got, ok := TierFromName(TierName(i))
+		if !ok || got != i {
+			t.Errorf("TierFromName(%q) = %d, %v; want %d, true", TierName(i), got, ok, i)
+		}
+	}
+	if _, ok := TierFromName("diamonds"); ok {
+		t.Error("TierFromName should reject unknown names")
+	}
+	if _, ok := TierFromName(""); ok {
+		t.Error("TierFromName should reject the empty name")
+	}
+}

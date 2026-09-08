@@ -10,17 +10,26 @@ import CardTile from './CardTile.vue'
 import OperatorPad from './OperatorPad.vue'
 import ArrowText from './ArrowText.vue'
 import Icon from './Icon.vue'
+import SkinFx from './SkinFx.vue'
 
 const props = defineProps({
   hand: { type: Object, default: null },
   disabled: { type: Boolean, default: false },
   hintData: { type: Object, default: null },
   dealing: { type: Boolean, default: false },
+  // equipped card skin id ('' = classic); sets the --skin-* scope below
+  skin: { type: String, default: '' },
 })
 const emit = defineEmits(['pick', 'op'])
 const { t } = useI18n()
 
 const root = ref(null)
+// SkinFx handle: fires the skin's WebGL celebration at the merge point
+const fx = ref(null)
+
+// premium skins get the WebGL ambience layer behind the cards; classic/mono
+// stay quiet (the :key remounts the canvas cleanly if the skin ever swaps)
+const fxSkin = computed(() => !['', 'classic', 'mono'].includes(props.skin))
 
 // The hint toast shows the full equation (and up to MAX_ALTS alternate ways),
 // so a single glance answers "how do I solve this?".
@@ -93,6 +102,9 @@ watch(
       if (!merged || !merged.id.startsWith('s')) return
       const c = centerOf(cardEl(merged.id))
       if (!c) return
+      // the skin's WebGL celebration rides on top: a pulse for every merge,
+      // the full ring + flash + spark shower when the hand resolves to 24
+      fx.value?.burst?.(c.x, c.y, merged.display === '24' ? 1 : 0.45)
       sparkle(c.x, c.y, { count: merged.display === '24' ? 26 : 15, power: 1.15 })
       popText(c.x, c.y - 26, merged.display, merged.display === '24' ? 'fx-merge gold' : 'fx-merge')
     })
@@ -101,7 +113,10 @@ watch(
 </script>
 
 <template>
-  <div ref="root" class="board">
+  <div ref="root" class="board" :class="'skin-' + (skin || 'classic')">
+    <!-- skin ambience (WebGL particles) sits behind every board element,
+         and the celebration canvas rides above the cards -->
+    <SkinFx ref="fx" v-if="fxSkin" :key="skin" :skin="skin" />
     <!-- dealing runs its own fly-in on the card, so the slot stays out of it -->
     <TransitionGroup :name="dealing ? 'carddeal' : 'cardf'" tag="div" class="cards" @leave="pinLeaving">
       <div v-for="(c, i) in hand.cards" :key="c.id" class="slot" :data-slot="c.id">
@@ -142,6 +157,7 @@ watch(
 
 <style scoped>
 .board {
+  position: relative; /* containing block for the SkinFx layer */
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
@@ -154,6 +170,7 @@ watch(
 }
 .cards {
   position: relative; /* containing block for the pinned leaving slots */
+  z-index: 1; /* above the SkinFx canvas */
   display: flex;
   gap: clamp(10px, 2.8vw, 20px);
   flex-wrap: wrap;
@@ -161,6 +178,9 @@ watch(
   min-height: calc(var(--card-w) * 1.45);
 }
 .slot { display: flex; }
+/* keep the pad, tip and hint toast above the particle layer too */
+.tip, .hint-pop { position: relative; z-index: 1; }
+.board :deep(.pad) { position: relative; z-index: 1; }
 
 /* survivors glide to their new spot instead of jumping */
 .cardf-move { transition: transform 0.42s var(--ease); }

@@ -29,6 +29,7 @@ export const api = {
   googleAuth: (credential) => request('/auth/google', { method: 'POST', body: { credential } }),
   me: (token) => request('/me', { token }),
   renameMe: (nickname, token) => request('/me/rename', { method: 'POST', body: { nickname }, token }),
+  deleteMe: (confirm, token) => request('/me', { method: 'DELETE', body: { confirm }, token }),
   createRound: (mode, token, sessionId) =>
     request('/rounds', { method: 'POST', body: { mode, sessionId }, token }),
   submitRound: (roundId, steps, token) =>
@@ -38,4 +39,8 @@ export const api = {
   leaderboard: (mode, limit = 50) => request(`/leaderboard?mode=${mode}&limit=${limit}`),
   createRoom: (cfg, token) => request('/rooms', { method: 'POST', body: cfg, token }),
   roomInfo: (code) => request(`/rooms/${code}`),
+  achievements: (token) => request('/achievements', { token }),
+  skins: (token) => request('/skins', { token }),
+  buySkin: (id, token) => request('/skins/' + id + '/buy', { method: 'POST', body: {}, token }),
+  equipSkin: (id, token) => request('/skins/' + id + '/equip', { method: 'POST', body: {}, token }),
 }

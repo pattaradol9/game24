@@ -1,24 +1,18 @@
 <script setup>
-// Lightweight modal overlay for admin dialogs (Esc / backdrop closes).
-import { onMounted, onUnmounted } from 'vue'
-
+// Lightweight modal for admin dialogs. Deliberately sticky: only the ✕
+// button closes it — backdrop clicks and Escape are ignored so a stray
+// click mid-edit never throws away the form.
 const emit = defineEmits(['close'])
 defineProps({ title: { type: String, default: '' } })
-
-function onKey(e) {
-  if (e.key === 'Escape') emit('close')
-}
-onMounted(() => window.addEventListener('keydown', onKey))
-onUnmounted(() => window.removeEventListener('keydown', onKey))
 </script>
 
 <template>
   <teleport to="body">
-    <div class="overlay" @click.self="emit('close')">
+    <div class="overlay">
       <div class="dialog panel">
         <header class="head">
           <h3>{{ title }}</h3>
-          <button class="btn quiet close" @click="emit('close')">✕</button>
+          <button class="btn quiet close" title="Close" aria-label="Close" @click="emit('close')">✕</button>
         </header>
         <div class="body">
           <slot />

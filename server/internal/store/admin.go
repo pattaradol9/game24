@@ -1,7 +1,8 @@
 // Admin-facing persistence: overview counters, player administration
-// (ban/unban/delete/rename, EXP adjustment, stat resets), full leaderboard
-// and round listings, and the event log. Every mutation here also writes an
-// event_logs row so the admin portal keeps a durable audit trail.
+// (ban/unban/delete/rename, EXP/coin overrides, stat resets, achievement
+// grants/revocations), full leaderboard and round listings, and the event
+// log. Every mutation here also writes an event_logs row so the admin portal
+// keeps a durable audit trail.
 package store
 
 import (
@@ -10,8 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/pattaradol9/game24/server/internal/achv"
 )
 
 // maxPlayerScan caps how many rows a nickname/email search decrypts in
@@ -205,6 +209,8 @@ type AdminPlayerRow struct {
 	Banned       bool
 	BanReason    string
 	TotalExp     int64
+	TotalCoins   int64
+	TierOverride string // admin tier override ('' = tier derives from level)
 	HandsSolved  int64
 	HandsSkipped int64
 	CreatedAt    time.Time
@@ -212,7 +218,7 @@ type AdminPlayerRow struct {
 }
 
 const adminPlayerSelect = `SELECT p.id, p.nickname_enc, p.email_enc, p.picture_enc, p.is_guest, p.banned, p.ban_reason,
-	p.total_exp, p.created_at, p.last_seen_at,
+	p.total_exp, p.total_coins, p.tier, p.created_at, p.last_seen_at,
 	COALESCE(a.solved, 0), COALESCE(a.skipped, 0)
 FROM players p
 LEFT JOIN (SELECT player_id, SUM(hands_solved) solved, SUM(hands_skipped) skipped
@@ -227,7 +233,7 @@ func (s *Store) scanAdminPlayer(row interface{ Scan(...any) error }) (AdminPlaye
 		createdAt, seenAt string
 	)
 	if err := row.Scan(&r.ID, &nickEnc, &emailEnc, &picEnc, &guest, &banned, &r.BanReason,
-		&r.TotalExp, &createdAt, &seenAt, &r.HandsSolved, &r.HandsSkipped); err != nil {
+		&r.TotalExp, &r.TotalCoins, &r.TierOverride, &createdAt, &seenAt, &r.HandsSolved, &r.HandsSkipped); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return r, ErrNotFound
 		}
@@ -361,29 +367,14 @@ func (s *Store) SetPlayerBanned(actor, playerID string, banned bool, reason stri
 // DeletePlayer removes a player and, through cascades, all of their mode
 // stats and rounds. The event log keeps a non-PII record of the deletion.
 func (s *Store) DeletePlayer(actor, playerID string) error {
-	p, err := s.PlayerByID(playerID)
-	if errors.Is(err, ErrNotFound) {
-		return ErrNotFound
-	}
-	if err != nil {
-		return err
-	}
-	res, err := s.db.Exec(`DELETE FROM players WHERE id = ?`, playerID)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return ErrNotFound
-	}
-	s.LogEvent(actor, "admin.delete", playerID,
-		mustJSON(map[string]any{"wasGuest": p.IsGuest, "totalExp": p.TotalExp}))
-	return nil
+	return s.deletePlayer(actor, "admin.delete", playerID)
 }
 
-// AdjustPlayerEXP applies an EXP delta (possibly negative) to one mode,
-// clamped at zero, then recomputes total_exp as the sum of all mode EXP so
-// the level/total ledger never desyncs from the per-mode leaderboards.
-func (s *Store) AdjustPlayerEXP(actor, playerID, mode string, delta int64) (Player, error) {
+// SetPlayerEXP overwrites one mode's EXP with an absolute value (negative
+// input clamps at zero) and resyncs total_exp as the sum of all mode EXP, so
+// the level/total ledger never desyncs from the per-mode leaderboards. The
+// event log records the before/after pair.
+func (s *Store) SetPlayerEXP(actor, playerID, mode string, value int64) (Player, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return Player{}, err
@@ -397,18 +388,17 @@ func (s *Store) AdjustPlayerEXP(actor, playerID, mode string, delta int64) (Play
 	if err := tx.QueryRow(`SELECT exp FROM player_mode_stats WHERE player_id = ? AND mode = ?`, playerID, mode).Scan(&before); err != nil {
 		return Player{}, err
 	}
-	after := before + delta
-	if after < 0 {
-		after = 0
+	if value < 0 {
+		value = 0
 	}
-	if _, err := tx.Exec(`UPDATE player_mode_stats SET exp = ? WHERE player_id = ? AND mode = ?`, after, playerID, mode); err != nil {
+	if _, err := tx.Exec(`UPDATE player_mode_stats SET exp = ? WHERE player_id = ? AND mode = ?`, value, playerID, mode); err != nil {
 		return Player{}, err
 	}
 	if err := syncTotalExp(tx, playerID); err != nil {
 		return Player{}, err
 	}
-	if err := logEventTx(tx, actor, "admin.exp.adjust", playerID,
-		mustJSON(map[string]any{"mode": mode, "delta": delta, "before": before, "after": after})); err != nil {
+	if err := logEventTx(tx, actor, "admin.exp.set", playerID,
+		mustJSON(map[string]any{"mode": mode, "before": before, "after": value})); err != nil {
 		return Player{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -467,6 +457,137 @@ func syncTotalExp(tx *sql.Tx, playerID string) error {
 	return nil
 }
 
+// --- coin & achievement management ---
+
+// ErrAlreadyUnlocked is returned when granting an achievement the player
+// already holds.
+var ErrAlreadyUnlocked = errors.New("store: achievement already unlocked")
+
+// SetPlayerCoins overwrites the player's coin balance with an absolute
+// value (negative input clamps at zero). Admin override only — normal
+// payouts go through AwardSolve; coin achievements re-evaluate on the
+// player's next hand. The event log records the before/after pair.
+func (s *Store) SetPlayerCoins(actor, playerID string, value int64) (Player, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Player{}, err
+	}
+	defer tx.Rollback()
+
+	var before int64
+	if err := tx.QueryRow(`SELECT total_coins FROM players WHERE id = ?`, playerID).Scan(&before); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Player{}, ErrNotFound
+		}
+		return Player{}, err
+	}
+	if value < 0 {
+		value = 0
+	}
+	if _, err := tx.Exec(`UPDATE players SET total_coins = ? WHERE id = ?`, value, playerID); err != nil {
+		return Player{}, err
+	}
+	if err := logEventTx(tx, actor, "admin.coins.set", playerID,
+		mustJSON(map[string]any{"before": before, "after": value})); err != nil {
+		return Player{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Player{}, err
+	}
+	return s.PlayerByID(playerID)
+}
+
+// GrantAchievement records an achievement unlock by hand and pays the entry's
+// standard EXP/coin rewards, exactly like a natural unlock — which means the
+// rewards land on the lifetime totals only, never on per-mode stats.
+func (s *Store) GrantAchievement(actor, playerID, achID string) (Player, error) {
+	def, ok := achv.ByID(achID)
+	if !ok {
+		return Player{}, ErrNotFound
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Player{}, err
+	}
+	defer tx.Rollback()
+
+	var exists int
+	if err := tx.QueryRow(`SELECT 1 FROM players WHERE id = ?`, playerID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Player{}, ErrNotFound
+		}
+		return Player{}, err
+	}
+	res, err := tx.Exec(`INSERT OR IGNORE INTO player_achievements (player_id, achievement_id) VALUES (?,?)`,
+		playerID, achID)
+	if err != nil {
+		return Player{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Player{}, ErrAlreadyUnlocked
+	}
+	if _, err := tx.Exec(`UPDATE players SET total_exp = total_exp + ?, total_coins = total_coins + ? WHERE id = ?`,
+		def.ExpReward, def.CoinReward, playerID); err != nil {
+		return Player{}, err
+	}
+	if err := logEventTx(tx, actor, "admin.achievement.grant", playerID,
+		mustJSON(map[string]any{"id": achID, "expReward": def.ExpReward, "coinReward": def.CoinReward})); err != nil {
+		return Player{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Player{}, err
+	}
+	return s.PlayerByID(playerID)
+}
+
+// SetPlayerTier stores a tier override (” clears it, falling back to the
+// tier derived from the player's level). The override replaces the derived
+// tier everywhere — profile display, leaderboards and the tier hint quota
+// included. Callers validate the tier name.
+func (s *Store) SetPlayerTier(actor, playerID, tier string) (Player, error) {
+	var before string
+	if err := s.db.QueryRow(`SELECT tier FROM players WHERE id = ?`, playerID).Scan(&before); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Player{}, ErrNotFound
+		}
+		return Player{}, err
+	}
+	if _, err := s.db.Exec(`UPDATE players SET tier = ? WHERE id = ?`, tier, playerID); err != nil {
+		return Player{}, err
+	}
+	s.LogEvent(actor, "admin.tier.set", playerID, mustJSON(map[string]any{"before": before, "after": tier}))
+	return s.PlayerByID(playerID)
+}
+
+// RevokeAchievement removes an achievement unlock. Rewards already banked
+// stay — clawing them back could push totals negative and break the payout
+// ledger; only the unlock row disappears. A revoked entry re-unlocks on the
+// player's next evaluation if its condition still holds.
+func (s *Store) RevokeAchievement(actor, playerID, achID string) (Player, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Player{}, err
+	}
+	defer tx.Rollback()
+
+	res, err := tx.Exec(`DELETE FROM player_achievements WHERE player_id = ? AND achievement_id = ?`,
+		playerID, achID)
+	if err != nil {
+		return Player{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Player{}, ErrNotFound
+	}
+	if err := logEventTx(tx, actor, "admin.achievement.revoke", playerID,
+		mustJSON(map[string]any{"id": achID})); err != nil {
+		return Player{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Player{}, err
+	}
+	return s.PlayerByID(playerID)
+}
+
 // --- full leaderboard (admin view: banned and guest rows visible) ---
 
 type AdminLeaderRow struct {
@@ -479,7 +600,7 @@ func (s *Store) AdminLeaderboard(mode string, limit, offset int) ([]AdminLeaderR
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
-	rows, err := s.db.Query(`SELECT p.id, p.nickname_enc, p.picture_enc, m.exp, m.hands_solved, m.best_streak, p.is_guest, p.banned
+	rows, err := s.db.Query(`SELECT p.id, p.nickname_enc, p.picture_enc, m.exp, m.hands_solved, m.best_streak, p.tier, p.is_guest, p.banned
 		FROM player_mode_stats m JOIN players p ON p.id = m.player_id
 		WHERE m.mode = ?
 		ORDER BY m.exp DESC, m.hands_solved DESC, m.best_streak DESC
@@ -496,7 +617,7 @@ func (s *Store) AdminLeaderboard(mode string, limit, offset int) ([]AdminLeaderR
 			picEnc         string
 			guest, bannedv int
 		)
-		if err := rows.Scan(&r.PlayerID, &nickEnc, &picEnc, &r.Exp, &r.HandsSolved, &r.BestStreak, &guest, &bannedv); err != nil {
+		if err := rows.Scan(&r.PlayerID, &nickEnc, &picEnc, &r.Exp, &r.HandsSolved, &r.BestStreak, &r.TierOverride, &guest, &bannedv); err != nil {
 			return nil, err
 		}
 		r.IsGuest = guest == 1
@@ -684,6 +805,177 @@ func (s *Store) Reset(actor, backupPath string) (ResetStats, error) {
 		"actor": actor, "wipedPlayers": st.Players, "wipedRounds": st.Rounds, "wipedEvents": st.Events,
 	}))
 	return st, nil
+}
+
+// --- database restore ---
+
+// ErrInvalidBackup marks a candidate restore file that is not a usable
+// game24 snapshot: unreadable, missing core tables, or written under a
+// different ENCRYPTION_KEY.
+var ErrInvalidBackup = errors.New("store: invalid backup")
+
+// restoreTables lists the application tables copied back on restore, in the
+// order the INSERT pass runs (players first — the children reference it).
+// The first four are required in any valid snapshot; the shop tables may be
+// absent from backups taken before the economy shipped.
+var restoreTables = []string{"players", "player_mode_stats", "rounds", "event_logs", "player_achievements", "player_skins"}
+
+// clearOrder deletes every application table row children-first, before the
+// copy pass refills them from the snapshot.
+var clearOrder = []string{"event_logs", "player_achievements", "player_skins", "player_mode_stats", "rounds", "players"}
+
+// tableColumns returns the column names of a table in the given attached
+// schema (e.g. "main", "restore_src") in declaration order.
+func (s *Store) tableColumns(schema, table string) ([]string, error) {
+	rows, err := s.db.Query(`PRAGMA ` + schema + `.table_info(` + table + `)`)
+	if err != nil {
+		return nil, fmt.Errorf("store: restore: inspect %s.%s: %w", schema, table, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, ctype string
+		var dflt any
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// RestoreStats reports what a restore brought back.
+type RestoreStats struct {
+	Players int64
+	Rounds  int64
+	Events  int64
+}
+
+// RestoreFrom replaces the contents of every application table with the rows
+// from the snapshot at snapshotPath (a file produced by BackupTo — same
+// schema lineage, same ENCRYPTION_KEY). Before touching anything it verifies
+// the snapshot (SQLite image, core tables, a decrypt probe) and writes a
+// safety snapshot of the live data to preRestorePath. All data copied back
+// lands in one transaction: a failure anywhere leaves the live rows alone.
+// Sessions recorded inside the snapshot come back to life; every token minted
+// after it dies. Schema drift is tolerated — only columns shared by both
+// sides are copied, so older snapshots fill newer columns with their defaults.
+func (s *Store) RestoreFrom(actor, snapshotPath, preRestorePath string) (RestoreStats, error) {
+	var st RestoreStats
+
+	if _, err := s.db.Exec(`ATTACH DATABASE ? AS restore_src`, snapshotPath); err != nil {
+		return st, fmt.Errorf("store: restore: %w: not a readable sqlite database: %v", ErrInvalidBackup, err)
+	}
+	detached := false
+	defer func() {
+		if !detached {
+			s.db.Exec(`DETACH DATABASE restore_src`)
+		}
+	}()
+
+	// every valid snapshot carries the four core tables; the shop tables
+	// joined later, so their absence is tolerated (columns below handle the rest)
+	for _, t := range restoreTables[:4] {
+		var n int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM restore_src.sqlite_master WHERE type = 'table' AND name = ?`, t).Scan(&n); err != nil || n == 0 {
+			return st, fmt.Errorf("store: restore: %w: missing table %s", ErrInvalidBackup, t)
+		}
+	}
+
+	// decrypt probe: a snapshot written under a different key would restore
+	// cleanly but yield profiles no one can read — refuse it up front
+	var probe string
+	err := s.db.QueryRow(`SELECT nickname_enc FROM restore_src.players WHERE nickname_enc != '' LIMIT 1`).Scan(&probe)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		// empty players table — nothing to probe
+	case err != nil:
+		return st, fmt.Errorf("store: restore: inspect snapshot: %w", err)
+	default:
+		if _, err := s.cr.Decrypt(probe, "players.nickname"); err != nil {
+			return st, fmt.Errorf("store: restore: %w: data does not decrypt — was the snapshot written with a different ENCRYPTION_KEY?", ErrInvalidBackup)
+		}
+	}
+
+	if preRestorePath != "" {
+		if err := s.BackupTo(preRestorePath); err != nil {
+			return st, fmt.Errorf("store: restore: safety snapshot: %w", err)
+		}
+	}
+
+	// all schema reads happen before the transaction: the pool holds a single
+	// connection, and the tx must not share it with new queries
+	mainCols := make(map[string][]string, len(restoreTables))
+	srcCols := make(map[string][]string, len(restoreTables))
+	for _, t := range restoreTables {
+		if mainCols[t], err = s.tableColumns("main", t); err != nil {
+			return st, err
+		}
+		if srcCols[t], err = s.tableColumns("restore_src", t); err != nil {
+			return st, err
+		}
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return st, err
+	}
+	defer tx.Rollback()
+
+	for _, t := range clearOrder {
+		if _, err := tx.Exec(`DELETE FROM ` + t); err != nil {
+			return st, fmt.Errorf("store: restore: clear %s: %w", t, err)
+		}
+	}
+	for _, t := range restoreTables {
+		cols := sharedColumns(mainCols[t], srcCols[t])
+		if len(cols) == 0 {
+			continue // snapshot predates this table entirely
+		}
+		list := strings.Join(cols, ", ")
+		if _, err := tx.Exec(`INSERT INTO main.` + t + ` (` + list + `) SELECT ` + list + ` FROM restore_src.` + t); err != nil {
+			return st, fmt.Errorf("store: restore: copy %s: %w", t, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return st, fmt.Errorf("store: restore: commit: %w", err)
+	}
+
+	s.db.Exec(`DETACH DATABASE restore_src`)
+	detached = true
+
+	// reclaim the space the old rows left behind
+	if _, err := s.db.Exec(`VACUUM`); err != nil {
+		return st, fmt.Errorf("store: restore vacuum: %w", err)
+	}
+	s.db.QueryRow(`SELECT COUNT(*) FROM players`).Scan(&st.Players)
+	s.db.QueryRow(`SELECT COUNT(*) FROM rounds`).Scan(&st.Rounds)
+	s.db.QueryRow(`SELECT COUNT(*) FROM event_logs`).Scan(&st.Events)
+	s.LogEvent("system", "db.restore", "", mustJSON(map[string]any{
+		"actor": actor, "backupFile": filepath.Base(snapshotPath),
+		"safetyFile": filepath.Base(preRestorePath),
+		"players":    st.Players, "rounds": st.Rounds, "events": st.Events,
+	}))
+	return st, nil
+}
+
+// sharedColumns intersects two column lists, preserving main's order.
+func sharedColumns(main, src []string) []string {
+	if len(main) == 0 || len(src) == 0 {
+		return nil
+	}
+	set := make(map[string]bool, len(src))
+	for _, c := range src {
+		set[c] = true
+	}
+	out := make([]string, 0, len(main))
+	for _, c := range main {
+		if set[c] {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // QueryCounts fills the table row counts shown on the Settings page. Errors

@@ -16,8 +16,9 @@ import Icon from '../components/Icon.vue'
 import ModeBadge from '../components/ModeBadge.vue'
 import PlayerChip from '../components/PlayerChip.vue'
 import { currentPlayer } from '../auth.js'
+import BuffBar from '../components/BuffBar.vue'
 
-const { t } = useI18n()
+const { t, lang } = useI18n()
 const route = useRoute()
 const game = useGame()
 const { phase, mode, hand, remaining, timeLimit, hintLeft, hintCard, result, busy, paused, combo } = game
@@ -25,6 +26,31 @@ const { phase, mode, hand, remaining, timeLimit, hintLeft, hintCard, result, bus
 const player = currentPlayer
 const toast = ref('')
 const timers = []
+
+/* newly unlocked achievements queue → sequential CelebrationPopup flashes */
+const achPopup = ref({ show: false, tier: '', title: '' })
+const achQueue = []
+const achLangTitle = (a) => a.title?.[lang.value] ?? a.title?.en ?? a.id
+
+function popNextAchievement() {
+  const a = achQueue.shift()
+  if (!a) return
+  achPopup.value = { show: true, tier: a.tier, title: achLangTitle(a) }
+  later(() => {
+    achPopup.value = { ...achPopup.value, show: false }
+    later(popNextAchievement, 380)
+  }, 2600)
+}
+
+watch(result, (r) => {
+  const list = r?.newAchievements ?? []
+  if (!list.length) return
+  achQueue.push(...list)
+  if (achPopup.value.show) return
+  // let the level/tier banner finish first so the two never overlap
+  if (r?.levelUp || r?.tierUp) later(popNextAchievement, 2800)
+  else popNextAchievement()
+})
 
 function later(fn, ms) {
   const id = setTimeout(fn, ms)
@@ -121,6 +147,7 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
       </button>
       <ModeBadge :mode="mode" />
       <div class="spacer" />
+      <BuffBar class="solo-buffs" />
       <StreakFlame :streak="streak" />
       <span class="who panel"><PlayerChip compact /></span>
     </header>
@@ -139,6 +166,7 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
           :disabled="paused"
           :hint-data="hintCard"
           :dealing="dealing"
+          :skin="player?.skin"
           @pick="game.pickCard"
           @op="game.setOperator"
         />
@@ -182,6 +210,12 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
       :kind="result?.tierUp ? 'tier' : 'level'"
       :value="result?.tierUp ? result?.player?.tier : `Lv.${result?.player?.level}`"
     />
+    <CelebrationPopup
+      :show="achPopup.show"
+      kind="achievement"
+      :tier="achPopup.tier"
+      :value="achPopup.title"
+    />
   </main>
 </template>
 
@@ -190,6 +224,11 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
 .top { display: flex; align-items: center; gap: 10px; }
 .back { padding: 12px 16px 12px 13px; gap: 7px; color: var(--text-dim); }
 .who { padding: 7px 14px 7px 7px; border-radius: var(--r-md); box-shadow: none; }
+/* boost tray rides in the header on desktop; phones keep the HUD minimal */
+.solo-buffs { display: none; }
+@media (min-width: 641px) {
+  .solo-buffs { display: flex; }
+}
 @media (hover: hover) { .back:hover { color: var(--text); } }
 .spacer { flex: 1; }
 

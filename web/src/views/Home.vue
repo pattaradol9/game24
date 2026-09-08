@@ -1,9 +1,9 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { useI18n } from '../i18n/index.js'
-import { getPlayer, initGoogle } from '../auth.js'
-import { sfx, toggleSound, soundEnabled } from '../audio.js'
+import { getPlayer, initGoogle, namePromptTick } from '../auth.js'
+import { sfx } from '../audio.js'
 import Brand from '../components/Brand.vue'
 import Suit from '../components/Suit.vue'
 import Icon from '../components/Icon.vue'
@@ -14,14 +14,16 @@ import NicknameModal from '../components/NicknameModal.vue'
 import RoomCreateModal from '../components/RoomCreateModal.vue'
 import ProfileMenu from '../components/ProfileMenu.vue'
 import SiteFooter from '../components/SiteFooter.vue'
+import BuffBar from '../components/BuffBar.vue'
+import SettingsMenu from '../components/SettingsMenu.vue'
+import BoostsMenu from '../components/BoostsMenu.vue'
 
-const { t, lang, toggle } = useI18n()
+const { t } = useI18n()
 const router = useRouter()
 
 const needName = ref(false)
 const showCreate = ref(false)
 const joinCode = ref('')
-const sound = ref(soundEnabled())
 
 // the four numbers in the hero are a worked example, not a live hand
 const SAMPLE = [
@@ -36,6 +38,12 @@ onMounted(async () => {
   try {
     await initGoogle()
   } catch { /* offline ok */ }
+})
+
+// chrome outside this page (the mobile bottom bar's profile item) can ask
+// for the nickname modal
+watch(namePromptTick, () => {
+  needName.value = true
 })
 
 function playSolo(mode) {
@@ -59,10 +67,6 @@ function onRoomCreated(code, hostKey) {
   showCreate.value = false
   router.push({ path: `/room/${code}`, query: { hostKey } })
 }
-
-function flipSound() {
-  sound.value = toggleSound()
-}
 </script>
 
 <template>
@@ -70,11 +74,12 @@ function flipSound() {
     <header class="top">
       <Brand size="md" :label="t('appName')" />
       <div class="spacer" />
+      <BuffBar class="hdr-buffs" />
       <ProfileMenu @require-name="needName = true" />
-      <button class="btn icon" :aria-label="sound ? 'mute' : 'unmute'" @click="flipSound">
-        <Icon :name="sound ? 'sound-on' : 'sound-off'" />
-      </button>
-      <button class="btn icon lang" @click="toggle">{{ lang === 'th' ? 'EN' : 'TH' }}</button>
+      <!-- phones: the boosts popover leads, settings follows; desktop shows
+           the settings menu only (the boost tray renders inline instead) -->
+      <BoostsMenu class="hdr-boosts" />
+      <SettingsMenu />
     </header>
 
     <section class="hero panel">
@@ -100,6 +105,25 @@ function flipSound() {
           <span class="result num">24</span>
         </div>
       </div>
+    </section>
+
+    <section class="quick">
+      <RouterLink to="/achievements" class="panel quick-card">
+        <span class="qic trophy"><Icon name="trophy" :size="19" /></span>
+        <span class="qtxt">
+          <b>{{ t('achievements') }}</b>
+          <span class="qsub">{{ t('achievementsHint') }}</span>
+        </span>
+        <Icon class="qgo" name="chevron-right" :size="16" />
+      </RouterLink>
+      <RouterLink to="/skins" class="panel quick-card">
+        <span class="qic skin"><Icon name="palette" :size="19" /></span>
+        <span class="qtxt">
+          <b>{{ t('skinShop') }}</b>
+          <span class="qsub">{{ t('skinsHint') }}</span>
+        </span>
+        <Icon class="qgo" name="chevron-right" :size="16" />
+      </RouterLink>
     </section>
 
     <section class="block">
@@ -149,8 +173,16 @@ function flipSound() {
 .home { display: flex; flex-direction: column; gap: 28px; padding: 20px 0 64px; }
 
 .top { display: flex; align-items: center; gap: 10px; }
+
+/* desktop header: the boost tray sits with the profile / settings cluster;
+   phones swap the tray for a boosts-status popover while the profile moves
+   into the bottom bar */
+.hdr-boosts { display: none; }
+@media (max-width: 640px) {
+  .hdr-buffs { display: none; }
+  .hdr-boosts { display: block; }
+}
 .spacer { flex: 1; }
-.lang { width: auto; padding-inline: 12px; font-size: 0.85rem; font-weight: 500; }
 
 /* ---------- hero ---------- */
 .hero {
@@ -213,6 +245,34 @@ function flipSound() {
 .result { order: 2; }
 
 /* ---------- sections ---------- */
+/* slim entries to the meta pages (achievements / skins) */
+.quick { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.quick-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color 0.15s var(--ease), transform 0.15s var(--ease);
+}
+@media (hover: hover) {
+  .quick-card:hover { border-color: rgba(246, 183, 60, 0.4); transform: translateY(-2px); }
+}
+.qic {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.qtxt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.qtxt b { font-size: 0.95rem; font-weight: 600; }
+.qsub { font-size: 0.78rem; color: var(--text-mute); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qgo { color: var(--text-mute); flex: none; }
 .block { display: flex; flex-direction: column; gap: 14px; }
 .split { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
 .hint { color: var(--text-mute); font-size: 0.88rem; line-height: 1.5; }
@@ -245,6 +305,10 @@ function flipSound() {
 @media (max-width: 900px) {
   .hero { grid-template-columns: 1fr; gap: 30px; padding: 30px 24px 32px; }
   .split { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  /* the bottom navigation bar owns these destinations on phones */
+  .quick { display: none; }
 }
 @media (max-width: 560px) {
   .home { gap: 22px; padding-bottom: 44px; }

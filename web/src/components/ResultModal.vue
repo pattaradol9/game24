@@ -4,20 +4,25 @@ import { levelProgress } from '../core/progress.js'
 import { useI18n } from '../i18n/index.js'
 import XpBar from './XpBar.vue'
 import TierAvatar from './TierAvatar.vue'
+import Icon from './Icon.vue'
 import { sfx } from '../audio.js'
 import { haptic } from '../fx.js'
 
-const { t } = useI18n()
+const { t, lang } = useI18n()
 
 const props = defineProps({
   show: { type: Boolean, default: false },
   win: { type: Boolean, default: false },
   expr: { type: String, default: '' },
   points: { type: Number, default: 0 },
+  // EXP the hand actually banked (server boost applied); falls back to points
+  exp: { type: Number, default: -1 },
   solution: { type: String, default: '' },
   player: { type: Object, default: null },
   levelUp: { type: Boolean, default: false },
   tierUp: { type: Boolean, default: false },
+  coins: { type: Number, default: 0 },
+  newAchievements: { type: Array, default: () => [] },
   remaining: { type: Number, default: 0 },
   timeLimit: { type: Number, default: 0 },
 })
@@ -32,6 +37,20 @@ const starCount = computed(() => {
   if (ratio >= 0.5) return 3
   if (ratio >= 0.22) return 2
   return 1
+})
+
+// boost chips only make sense when the multiplier actually paid more (EXP:
+// banked > base points; coins: any payout while a coin boost runs)
+const fmtMult = (m) => (Number.isInteger(m) ? String(m) : String(Math.round(m * 100) / 100))
+const expBoostLabel = computed(() => {
+  const b = props.player?.boosts?.exp
+  if (!b || props.exp < 0 || props.exp <= props.points) return ''
+  return `×${fmtMult(b.multiplier)}`
+})
+const coinBoostLabel = computed(() => {
+  const b = props.player?.boosts?.coins
+  if (!b || props.coins <= 0) return ''
+  return `×${fmtMult(b.multiplier)}`
 })
 
 /* ---------------------------------------------------------------------------
@@ -54,7 +73,7 @@ function runPayout() {
   const p = props.player
   if (!p || p.isGuest) return
   const to = p.totalExp ?? 0
-  const from = Math.max(0, to - (props.points ?? 0))
+  const from = Math.max(0, to - (props.exp >= 0 ? props.exp : props.points ?? 0))
   expFrom.value = from
   expNow.value = from
   if (to <= from) return
@@ -92,6 +111,38 @@ function reveal() {
     }, 620 + i * 260))
   }
 }
+
+/* ---------------------------------------------------------------------------
+   Newly unlocked achievements slide in once the payout has (mostly) settled.
+--------------------------------------------------------------------------- */
+const ACH_TIERS = {
+  bronze: '#cd7f32',
+  silver: '#c0c0c0',
+  gold: '#ffd700',
+  platinum: '#7de3e1',
+  legend: '#b283f0',
+}
+const achTierColor = (tier) => ACH_TIERS[String(tier || '').toLowerCase()] ?? ACH_TIERS.bronze
+const achTitle = (a) => a.title?.[lang.value] ?? a.title?.en ?? a.id
+
+// several unlocks in one hand read bronze → legend
+const ACH_TIER_ORDER = ['bronze', 'silver', 'gold', 'platinum', 'legend']
+const sortedAchievements = computed(() =>
+  [...props.newAchievements].sort(
+    (a, b) => ACH_TIER_ORDER.indexOf(String(a.tier || '').toLowerCase()) - ACH_TIER_ORDER.indexOf(String(b.tier || '').toLowerCase()),
+  )
+)
+
+const achRevealed = ref(false)
+let achTimer = 0
+watch(() => props.show, (s) => {
+  clearTimeout(achTimer)
+  achRevealed.value = false
+  if (s && props.newAchievements.length) {
+    achTimer = setTimeout(() => (achRevealed.value = true), 1250)
+  }
+}, { immediate: true })
+onUnmounted(() => clearTimeout(achTimer))
 </script>
 
 <template>
@@ -111,7 +162,22 @@ function reveal() {
 
       <p v-if="points > 0" class="points num" :class="{ ticking: gained < points }">
         +{{ player && !player.isGuest ? gained : points }} EXP
+        <span v-if="expBoostLabel" class="boost-chip">{{ expBoostLabel }}</span>
       </p>
+
+      <p v-if="win && coins > 0" class="coin-gain chip accent">
+        <Icon name="coin" :size="18" />
+        <b class="num">+{{ coins }}</b>
+        <span v-if="coinBoostLabel" class="boost-chip">{{ coinBoostLabel }}</span>
+      </p>
+
+      <TransitionGroup v-if="achRevealed && sortedAchievements.length" name="achpop" tag="div" class="ach-list">
+        <div v-for="a in sortedAchievements" :key="a.id" class="ach-row" :style="{ '--tc': achTierColor(a.tier) }">
+          <Icon class="ach-ic" name="trophy" :size="16" />
+          <span class="ach-name">{{ achTitle(a) }}</span>
+          <span class="ach-rewards num">+{{ a.expReward }} EXP · +{{ a.coinReward }}</span>
+        </div>
+      </TransitionGroup>
 
       <div v-if="player && !player.isGuest" class="progress">
         <TierAvatar :tier="player.tier" :src="player.picture" :name="player.nickname" :size="46" />
@@ -190,6 +256,42 @@ function reveal() {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.65; }
 }
+
+/* server-wide EXP boost multiplier that bumped this payout */
+.boost-chip {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 2px 8px;
+  border-radius: var(--r-full);
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid rgba(246, 183, 60, 0.35);
+  animation: rise-in 0.3s var(--ease-out-back);
+}
+
+/* coins earned this hand */
+.coin-gain { align-self: center; font-weight: 600; }
+.coin-gain b { font-weight: 700; }
+
+/* achievements unlocked by this hand, revealed after the payout settles */
+.ach-list { display: flex; flex-direction: column; gap: 8px; }
+.ach-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid color-mix(in srgb, var(--tc) 45%, transparent);
+  background: color-mix(in srgb, var(--tc) 10%, transparent);
+  border-radius: var(--r-sm);
+  padding: 9px 12px;
+  text-align: left;
+}
+.ach-ic { color: var(--tc); flex: none; }
+.ach-name { flex: 1; min-width: 0; font-weight: 500; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ach-rewards { flex: none; font-size: 0.72rem; color: var(--text-dim); }
+.achpop-enter-active { animation: rise-in 0.3s var(--ease-out-back); }
+.achpop-enter-from { opacity: 0; transform: translateY(8px); }
 /* framed avatar states the tier; the bar tells you how far to the next one */
 .progress { display: flex; align-items: center; gap: 14px; }
 .progress .bar { flex: 1; width: auto; min-width: 0; }

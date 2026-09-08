@@ -512,7 +512,22 @@ func (r *Room) Submit(sessionID string, steps []game.Step) error {
 	r.state = StateSummary
 
 	if p.dbID != "" && r.award != nil {
-		go r.award(p.dbID, r.cfg.Mode, points)
+		dbID, winner, mode := p.dbID, p.id, r.cfg.Mode
+		go func() {
+			unlocks := r.award(dbID, mode, points)
+			if len(unlocks) == 0 {
+				return
+			}
+			payload := make([]map[string]any, 0, len(unlocks))
+			for _, u := range unlocks {
+				payload = append(payload, map[string]any{
+					"id": u.ID, "tier": u.Tier,
+					"title":     map[string]any{"en": u.TitleEN, "th": u.TitleTH},
+					"expReward": u.ExpReward, "coinReward": u.CoinReward,
+				})
+			}
+			r.sendTo(winner, "achievements", map[string]any{"unlocked": payload})
+		}()
 	}
 
 	result := map[string]any{

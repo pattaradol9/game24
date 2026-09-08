@@ -110,7 +110,7 @@ export function useGame() {
       const data = await api.skipRound(round.value.roundId, getToken())
       if (disposed) return
       updatePlayer(data.player)
-      result.value = { win: false, solution: data.solution, player: data.player, points: 0 }
+      result.value = { win: false, solution: data.solution, player: data.player, points: 0, coins: data.coins ?? 0, newAchievements: data.newAchievements ?? [] }
     } catch {
       if (disposed) return
       result.value = { win: false, solution: '', points: 0 }
@@ -147,7 +147,9 @@ export function useGame() {
       updatePlayer(data.player)
       burst()
       sfx.win()
-      result.value = { win: true, expr: data.expr, points: data.points, player: data.player, levelUp: data.levelUp, tierUp: data.tierUp, remaining: remaining.value, timeLimit: timeLimit.value }
+      // `exp` is what the hand banked server-side (boost multiplier
+      // applied); it falls back to the game points when absent
+      result.value = { win: true, expr: data.expr, points: data.points, exp: data.exp ?? data.points, player: data.player, levelUp: data.levelUp, tierUp: data.tierUp, coins: data.coins ?? 0, newAchievements: data.newAchievements ?? [], remaining: remaining.value, timeLimit: timeLimit.value }
       hintCard.value = null
       combo.value = 0
       phase.value = 'result'
@@ -176,7 +178,7 @@ export function useGame() {
       if (disposed) return
       updatePlayer(data.player)
       sfx.lose()
-      result.value = { win: false, solution: data.solution, player: data.player, points: 0, remaining: remaining.value, timeLimit: timeLimit.value }
+      result.value = { win: false, solution: data.solution, player: data.player, points: 0, coins: data.coins ?? 0, newAchievements: data.newAchievements ?? [], remaining: remaining.value, timeLimit: timeLimit.value }
       hintCard.value = null
       combo.value = 0
       phase.value = 'result'

@@ -2,7 +2,9 @@ import { createApp } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
 import './style.css'
+import './skins.css'
 import { restoreSession } from './auth.js'
+import { initRealtime } from './realtime.js'
 import { applySeo } from './seo.js'
 
 const router = createRouter({
@@ -62,6 +64,32 @@ const router = createRouter({
       },
     },
     {
+      path: '/achievements',
+      component: () => import('./views/AchievementsView.vue'),
+      meta: {
+        seo: {
+          title: { th: 'ความสำเร็จ · 24 Game', en: 'Achievements · 24 Game' },
+          description: {
+            th: 'รวมความสำเร็จทั้งหมดของ 24 Game ไล่ระดับบรอนซ์ถึงเลเจนด์ ปลดล็อกเพื่อรับ EXP และเหรียญ',
+            en: 'Every 24 Game achievement from bronze to legend — unlock them to earn EXP and coins.',
+          },
+        },
+      },
+    },
+    {
+      path: '/skins',
+      component: () => import('./views/SkinShopView.vue'),
+      meta: {
+        seo: {
+          title: { th: 'ชุดไพ่ · 24 Game', en: 'Card Skins · 24 Game' },
+          description: {
+            th: 'สะสมเหรียญจากการเล่นแล้วแลกชุดไพ่สุดพิเศษ 12 แบบ ตั้งแต่คลาสสิกถึงกาแล็กซี',
+            en: 'Earn coins by playing and trade them for 12 special card skins, from classic to galaxy.',
+          },
+        },
+      },
+    },
+    {
       path: '/privacy',
       component: () => import('./views/LegalView.vue'),
       props: { doc: 'privacy' },
@@ -109,6 +137,8 @@ router.afterEach((to) => {
 
 async function boot() {
   await restoreSession().catch(() => null)
+  // live profile push: admin adjustments land without a refresh
+  initRealtime()
   createApp(App).use(router).mount('#app')
 }
 

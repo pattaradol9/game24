@@ -15,6 +15,7 @@ import (
 	"github.com/pattaradol9/game24/server/internal/game"
 	"github.com/pattaradol9/game24/server/internal/handler"
 	"github.com/pattaradol9/game24/server/internal/httpserver"
+	"github.com/pattaradol9/game24/server/internal/presence"
 	"github.com/pattaradol9/game24/server/internal/room"
 	"github.com/pattaradol9/game24/server/internal/secretmanager"
 	"github.com/pattaradol9/game24/server/internal/store"
@@ -54,11 +55,23 @@ func main() {
 	}
 	defer db.Close()
 
-	// 3. multiplayer hub with EXP awarding for signed-in winners.
-	hub := room.NewHub(func(dbPlayerID string, mode game.Mode, points int64) {
-		if _, _, err := db.AwardEXP(dbPlayerID, string(mode), points, true); err != nil {
-			log.Printf("award exp: %v", err)
+	// 3. multiplayer hub: round winners bank EXP + coins, achievement
+	// unlocks are pushed back to the winner's socket.
+	hub := room.NewHub(func(dbPlayerID string, mode game.Mode, points int64) []room.Unlock {
+		_, unlocked, err := db.AwardSolve(dbPlayerID, string(mode), points, true)
+		if err != nil {
+			log.Printf("award solve: %v", err)
+			return nil
 		}
+		out := make([]room.Unlock, 0, len(unlocked))
+		for _, d := range unlocked {
+			out = append(out, room.Unlock{
+				ID: d.ID, Tier: string(d.Tier),
+				TitleEN: d.Title.En, TitleTH: d.Title.Th,
+				ExpReward: d.ExpReward, CoinReward: d.CoinReward,
+			})
+		}
+		return out
 	})
 
 	// 4. REST + websocket + embedded SPA.
@@ -80,6 +93,9 @@ func main() {
 		Hub:    hub,
 		Cfg:    cfg,
 		WS:     ws.NewHandler(hub, db, cfg.CORSOrigins),
+		// live profile push: admin adjustments reach the player's open
+		// tabs through /api/v1/ws/player without a refresh
+		Presence: presence.NewBroker(),
 	}
 
 	srv := httpserver.New(cfg, api, webui.FS())

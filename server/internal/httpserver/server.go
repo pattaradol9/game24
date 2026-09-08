@@ -32,6 +32,8 @@ func New(cfg config.Config, api *handler.API, webFS fs.FS) *Server {
 	r.Use(middleware.RealIP)
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	// caps every request at 90s — websocket upgrades hijack the connection
+	// and manage their own lifetime after that
 	r.Use(middleware.Timeout(90 * time.Second))
 	r.Use(httprate.LimitByIP(200, time.Minute))
 	r.Use(cors.Handler(cors.Options{

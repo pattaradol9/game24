@@ -31,6 +31,10 @@ export function useRoom() {
   // epoch ms deadline while the host seat is empty and the reconnect grace
   // is running; 0 means the host is connected
   const hostDeadline = ref(0)
+  // achievements unlocked by winning a round; rendered as non-blocking
+  // toasts that dismiss themselves (server pushes one message per award)
+  const achievementPops = ref([])
+  let popTimers = []
   const isHost = computed(() => you.value !== '' && you.value === host.value)
 
   let sock = null
@@ -142,6 +146,19 @@ export function useRoom() {
       case 'host_reconnecting':
         hostDeadline.value = d.endsAt
         break
+      case 'achievements': {
+        const list = Array.isArray(d.unlocked) ? d.unlocked : []
+        if (!list.length) break
+        const at = Date.now()
+        const pops = list.map((a, i) => ({ ...a, key: `${a.id}:${at}:${i}` }))
+        achievementPops.value = [...achievementPops.value, ...pops]
+        for (const p of pops) {
+          popTimers.push(setTimeout(() => {
+            achievementPops.value = achievementPops.value.filter((x) => x.key !== p.key)
+          }, 4600))
+        }
+        break
+      }
       case 'host_back':
         hostDeadline.value = 0
         break
@@ -197,6 +214,10 @@ export function useRoom() {
     roundResult.value = null
     hint.value = null
     combo.value = 0
+    // a fresh round wipes any achievement toasts still on screen
+    popTimers.forEach(clearTimeout)
+    popTimers = []
+    achievementPops.value = []
     state.value = 'round'
     remaining.value = Math.max(0, Math.ceil((d.endsAt - Date.now()) / 1000))
     timeLimit.value = d.timeLimit
@@ -274,6 +295,9 @@ export function useRoom() {
   function leave() {
     stopTimer()
     sock?.close()
+    popTimers.forEach(clearTimeout)
+    popTimers = []
+    achievementPops.value = []
     hint.value = null
     combo.value = 0
     state.value = 'closed'
@@ -282,7 +306,7 @@ export function useRoom() {
   return {
     state, code, you, players, host, config, roundNo, totalRounds,
     numbers, endsAt, remaining, timeLimit, hand, roundResult, matchResult, hint,
-    wrongFlash, error, isHost, combo, intro, hostDeadline,
+    wrongFlash, error, isHost, combo, intro, hostDeadline, achievementPops,
     open, start, rename, pickCard, setOperator, undo, askHint, askRegen, leave, introDone,
   }
 }

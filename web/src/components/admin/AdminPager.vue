@@ -1,5 +1,6 @@
 <script setup>
 // Minimal list pager: prev/next + "from–to of total".
+import Icon from '../Icon.vue'
 defineProps({
   offset: { type: Number, required: true },
   limit: { type: Number, required: true },
@@ -15,8 +16,8 @@ const emit = defineEmits(['page'])
       {{ total === 0 ? 'no results' : `${offset + 1}–${Math.min(offset + limit, total)} of ${total}` }}
     </span>
     <div class="nav">
-      <button class="btn quiet" :disabled="loading || offset === 0" @click="emit('page', offset - limit)">‹ Prev</button>
-      <button class="btn quiet" :disabled="loading || offset + limit >= total" @click="emit('page', offset + limit)">Next ›</button>
+      <button class="btn quiet" :disabled="loading || offset === 0" @click="emit('page', offset - limit)"><Icon name="back" :size="13" />Prev</button>
+      <button class="btn quiet" :disabled="loading || offset + limit >= total" @click="emit('page', offset + limit)">Next<Icon name="chevron-right" :size="13" /></button>
     </div>
   </div>
 </template>

@@ -17,6 +17,7 @@ import (
 	"github.com/pattaradol9/game24/server/internal/auth"
 	"github.com/pattaradol9/game24/server/internal/config"
 	"github.com/pattaradol9/game24/server/internal/game"
+	"github.com/pattaradol9/game24/server/internal/presence"
 	"github.com/pattaradol9/game24/server/internal/progress"
 	"github.com/pattaradol9/game24/server/internal/room"
 	"github.com/pattaradol9/game24/server/internal/store"
@@ -28,6 +29,9 @@ type API struct {
 	Hub    *room.Hub
 	Cfg    config.Config
 	WS     http.Handler // room websocket endpoint (mounted at /ws/room/{code})
+	// Presence fans live profile pushes out to each player's open
+	// /ws/player sockets; nil disables the player socket (503).
+	Presence *presence.Broker
 }
 
 type envelopeOut struct {
@@ -55,20 +59,47 @@ type modeStatJSON struct {
 	CurrentStreak int64 `json:"currentStreak"`
 }
 
+// boostJSON is the player-facing view of one running server-wide boost: the
+// multiplier applied to the payout it names and when the window closes.
+type boostJSON struct {
+	Kind       string  `json:"kind"`
+	Multiplier float64 `json:"multiplier"`
+	EndsAt     string  `json:"endsAt"` // RFC3339, UTC
+}
+
+// boostViews collects every running boost (keyed by kind, e.g. "exp",
+// "coins"); it travels inside the player JSON and as the ws/player "boost"
+// push. Callers must not run it inside a store transaction.
+func (a *API) boostViews() map[string]boostJSON {
+	out := map[string]boostJSON{}
+	for _, kind := range []store.BoostKind{store.BoostKindExp, store.BoostKindCoins} {
+		if ab, active := a.Store.ActiveBoost(kind); active {
+			out[string(kind)] = boostJSON{
+				Kind: string(kind), Multiplier: ab.Multiplier,
+				EndsAt: ab.EndsAt.UTC().Format(time.RFC3339),
+			}
+		}
+	}
+	return out
+}
+
 type playerJSON struct {
-	ID        string                  `json:"id"`
-	Nickname  string                  `json:"nickname"`
-	Email     string                  `json:"email,omitempty"`
-	Picture   string                  `json:"picture,omitempty"`
-	IsGuest   bool                    `json:"isGuest"`
-	IsAdmin   bool                    `json:"isAdmin"`
-	TotalExp  int64                   `json:"totalExp"`
-	Level     int64                   `json:"level"`
-	LevelInto int64                   `json:"levelExpInto"`
-	LevelNext int64                   `json:"levelExpForNext"`
-	Tier      string                  `json:"tier"`
-	TierBonus int                     `json:"tierHintBonus"` // single-player hint bonus
-	PerMode   map[string]modeStatJSON `json:"perMode"`
+	ID         string                  `json:"id"`
+	Nickname   string                  `json:"nickname"`
+	Email      string                  `json:"email,omitempty"`
+	Picture    string                  `json:"picture,omitempty"`
+	IsGuest    bool                    `json:"isGuest"`
+	IsAdmin    bool                    `json:"isAdmin"`
+	TotalExp   int64                   `json:"totalExp"`
+	TotalCoins int64                   `json:"totalCoins"`
+	Skin       string                  `json:"skin"`
+	Level      int64                   `json:"level"`
+	LevelInto  int64                   `json:"levelExpInto"`
+	LevelNext  int64                   `json:"levelExpForNext"`
+	Tier       string                  `json:"tier"`
+	TierBonus  int                     `json:"tierHintBonus"` // single-player hint bonus
+	Boosts     map[string]boostJSON    `json:"boosts,omitempty"`
+	PerMode    map[string]modeStatJSON `json:"perMode"`
 }
 
 // isAdminPlayer reports whether the player's Google email is on the
@@ -82,14 +113,18 @@ func (a *API) isAdminPlayer(p store.Player) bool {
 
 func (a *API) toPlayerJSON(p store.Player) playerJSON {
 	lv, into, next := progress.LevelProgress(p.TotalExp)
-	tier := progress.TierFromLevel(lv)
+	tier := p.EffectiveTier()
 	out := playerJSON{
 		ID: p.ID, Nickname: p.Nickname, Email: p.Email, Picture: p.Picture,
 		IsGuest: p.IsGuest, IsAdmin: a.isAdminPlayer(p), TotalExp: p.TotalExp,
+		TotalCoins: p.TotalCoins, Skin: p.Skin,
 		Level: lv, LevelInto: into, LevelNext: next,
 		Tier: progress.TierName(tier), TierBonus: progress.TierBonusQuota(tier),
 		PerMode: map[string]modeStatJSON{},
 	}
+	// two extra single-row reads; every open tab then sees its buff icons
+	// without another endpoint
+	out.Boosts = a.boostViews()
 	for mode, st := range p.Stats {
 		out.PerMode[mode] = modeStatJSON{
 			Exp: st.Exp, HandsSolved: st.HandsSolved, HandsSkipped: st.HandsSkipped,
@@ -163,6 +198,7 @@ func (a *API) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { ok(w, map[string]string{"status": "ok"}) })
 	r.Handle("/ws/room/{code}", a.WS)
+	r.Handle("/ws/player", a.playerWS())
 	r.Get("/meta", func(w http.ResponseWriter, _ *http.Request) {
 		ok(w, map[string]any{"googleClientId": a.Cfg.GoogleClientID})
 	})
@@ -176,15 +212,20 @@ func (a *API) Routes() chi.Router {
 		priv.Use(requirePlayer(a))
 		priv.Get("/me", a.me)
 		priv.Post("/me/rename", a.renameMe)
+		priv.Delete("/me", a.deleteMe)
 		priv.Post("/rounds", a.createRound)
 		priv.Post("/rounds/{id}/submit", a.submitRound)
 		priv.Post("/rounds/{id}/skip", a.skipRound)
 		priv.Post("/rounds/{id}/hint", a.hintRound)
+		priv.Post("/skins/{id}/buy", a.buySkin)
+		priv.Post("/skins/{id}/equip", a.equipSkin)
 	})
 
 	r.Group(func(priv chi.Router) {
 		priv.Use(optionalPlayer(a))
 		priv.Post("/rooms", a.createRoom)
+		priv.Get("/achievements", a.achievements)
+		priv.Get("/skins", a.skinCatalog)
 	})
 
 	// admin portal — 404s entirely when the ADMIN_EMAILS allowlist is empty
@@ -235,6 +276,10 @@ func (a *API) googleAuth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p, token, err := a.Store.GoogleLogin(claims.Sub, claims.Email, claims.Name, claims.Picture)
+	if errors.Is(err, store.ErrBanned) {
+		fail(w, http.StatusForbidden, "account banned")
+		return
+	}
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
@@ -270,7 +315,39 @@ func (a *API) renameMe(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	a.notifyPlayer(updated)
 	ok(w, map[string]any{"player": a.toPlayerJSON(updated)})
+}
+
+// deleteMe permanently deletes the signed-in player's own account: the
+// player row and every dependent row (mode stats, rounds, achievements,
+// owned skins) vanish through cascades and the session token dies with the
+// account. The body must confirm the intent, mirroring the admin DB reset.
+// Google accounts only — guests are ephemeral, cannot self-delete and the
+// profile menu hides the action for them.
+func (a *API) deleteMe(w http.ResponseWriter, r *http.Request) {
+	p, _ := playerOf(r)
+	if p.IsGuest {
+		fail(w, http.StatusForbidden, "google sign-in required")
+		return
+	}
+	var body struct {
+		Confirm string `json:"confirm"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Confirm != "DELETE" {
+		fail(w, http.StatusBadRequest, `confirmation required: {"confirm":"DELETE"}`)
+		return
+	}
+	if err := a.Store.DeleteOwnPlayer(p.ID); errors.Is(err, store.ErrNotFound) {
+		fail(w, http.StatusNotFound, "player not found")
+		return
+	} else if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	// any other open tab of the account learns about the deletion live
+	a.notifyPlayerDeleted(p.ID)
+	ok(w, map[string]any{"deleted": true})
 }
 
 func sanitizeName(s string) string {
@@ -318,8 +395,7 @@ func (a *API) createRound(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	lv := progress.LevelFromExp(p.TotalExp)
-	quota := int64(progress.SingleHintQuota(progress.TierFromLevel(lv)))
+	quota := int64(progress.SingleHintQuota(p.EffectiveTier()))
 	used, err := a.Store.HintsUsedInSession(p.ID, body.SessionID)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
@@ -362,8 +438,10 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 	elapsed := time.Since(round.DealtAt)
 	if elapsed > time.Duration(cfg.TimeLimitSec+10)*time.Second {
 		a.Store.FinishRound(round.ID, "expired", 0, elapsed.Milliseconds())
+		// no payout on an expired submit; the skip still counts toward
+		// achievements and will surface on the player's next fetch
 		if !p.IsGuest {
-			a.Store.AwardEXP(p.ID, round.Mode, 0, false)
+			a.Store.AwardSkip(p.ID, round.Mode)
 		}
 		fail(w, http.StatusRequestTimeout, "time over")
 		return
@@ -379,10 +457,18 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 	points := (10 + remaining) * int64(cfg.Multiplier)
 
 	lvBefore := progress.LevelFromExp(p.TotalExp)
+	var coins, expEarned int64
+	var unlocked []achievementJSON
 	if !p.IsGuest {
-		if _, _, err := a.Store.AwardEXP(p.ID, round.Mode, points, true); err != nil {
+		res, freshUnlocked, err := a.Store.AwardSolve(p.ID, round.Mode, points, false)
+		if err != nil {
 			fail(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		coins = res.CoinsEarned
+		expEarned = res.ExpEarned
+		for _, d := range freshUnlocked {
+			unlocked = append(unlocked, toAchievementJSON(d))
 		}
 	}
 	a.Store.FinishRound(round.ID, "solved", points, elapsed.Milliseconds())
@@ -392,14 +478,20 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 		fresh = p
 	}
 	lvAfter := progress.LevelFromExp(fresh.TotalExp)
-	tierAfter := progress.TierFromLevel(lvAfter)
+	tierAfter := fresh.EffectiveTier()
 
+	if unlocked == nil {
+		unlocked = []achievementJSON{}
+	}
 	ok(w, map[string]any{
-		"expr":    game.ExprFromSteps(round.Numbers, body.Steps),
-		"points":  points,
-		"player":  a.toPlayerJSON(fresh),
-		"levelUp": lvAfter > lvBefore,
-		"tierUp":  tierAfter != progress.TierFromLevel(lvBefore),
+		"expr":            game.ExprFromSteps(round.Numbers, body.Steps),
+		"points":          points,
+		"exp":             expEarned, // what the hand banked, boost multiplier included
+		"coins":           coins,
+		"newAchievements": unlocked,
+		"player":          a.toPlayerJSON(fresh),
+		"levelUp":         lvAfter > lvBefore,
+		"tierUp":          tierAfter != p.EffectiveTier(),
 	})
 }
 
@@ -420,8 +512,16 @@ func (a *API) skipRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.Store.FinishRound(round.ID, "skipped", 0, time.Since(round.DealtAt).Milliseconds())
+	var unlocked []achievementJSON
 	if !p.IsGuest {
-		a.Store.AwardEXP(p.ID, round.Mode, 0, false)
+		if u, err := a.Store.AwardSkip(p.ID, round.Mode); err == nil {
+			for _, d := range u {
+				unlocked = append(unlocked, toAchievementJSON(d))
+			}
+		}
+	}
+	if unlocked == nil {
+		unlocked = []achievementJSON{}
 	}
 
 	sols := game.Solve(round.Numbers)
@@ -431,8 +531,9 @@ func (a *API) skipRound(w http.ResponseWriter, r *http.Request) {
 	}
 	fresh, _ := a.Store.PlayerByToken(bearerToken(r))
 	ok(w, map[string]any{
-		"solution": expr,
-		"player":   a.toPlayerJSON(fresh),
+		"solution":        expr,
+		"newAchievements": unlocked,
+		"player":          a.toPlayerJSON(fresh),
 	})
 }
 
@@ -452,8 +553,7 @@ func (a *API) hintRound(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "round already finished")
 		return
 	}
-	lv := progress.LevelFromExp(p.TotalExp)
-	quota := int64(progress.SingleHintQuota(progress.TierFromLevel(lv)))
+	quota := int64(progress.SingleHintQuota(p.EffectiveTier()))
 	// the budget is per play session: hands dealt after this one draw from the
 	// same pool, so count every hint spent under this session id
 	used := round.HintsUsed
@@ -515,9 +615,10 @@ func (a *API) leaderboard(w http.ResponseWriter, r *http.Request) {
 	out := make([]rowJSON, 0, len(rows))
 	for i, row := range rows {
 		lv := progress.LevelFromExp(row.Exp)
+		tier, _ := tierOf(lv, row.TierOverride)
 		out = append(out, rowJSON{
 			Rank: offset + i + 1, PlayerID: row.PlayerID, Nickname: row.Nickname, Picture: row.Picture,
-			Exp: row.Exp, Level: lv, Tier: progress.TierName(progress.TierFromLevel(lv)),
+			Exp: row.Exp, Level: lv, Tier: tier,
 			HandsSolved: row.HandsSolved, BestStreak: row.BestStreak,
 		})
 	}

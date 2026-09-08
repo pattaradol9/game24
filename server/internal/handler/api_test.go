@@ -14,6 +14,7 @@ import (
 	"github.com/pattaradol9/game24/server/internal/config"
 	"github.com/pattaradol9/game24/server/internal/crypto"
 	"github.com/pattaradol9/game24/server/internal/game"
+	"github.com/pattaradol9/game24/server/internal/presence"
 	"github.com/pattaradol9/game24/server/internal/progress"
 	"github.com/pattaradol9/game24/server/internal/room"
 	"github.com/pattaradol9/game24/server/internal/store"
@@ -32,9 +33,10 @@ func newTestAPI(t *testing.T) (*API, *chi.Mux) {
 	}
 	db.SetCrypter(cr)
 	api := &API{
-		Store: db,
-		Hub:   room.NewHub(nil),
-		Cfg:   config.Config{Port: "0"},
+		Store:    db,
+		Hub:      room.NewHub(nil),
+		Cfg:      config.Config{Port: "0"},
+		Presence: presence.NewBroker(),
 	}
 	r := chi.NewRouter()
 	r.Mount("/api/v1", api.Routes())
@@ -74,6 +76,62 @@ func get(t *testing.T, mux *chi.Mux, path, token string) (int, map[string]any) {
 func data(m map[string]any) map[string]any {
 	d, _ := m["data"].(map[string]any)
 	return d
+}
+
+func del(t *testing.T, mux *chi.Mux, path string, body any, token string) (int, map[string]any) {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest("DELETE", path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	res := httptest.NewRecorder()
+	mux.ServeHTTP(res, req)
+	var out map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &out); err != nil {
+		t.Fatalf("bad json %s: %v", res.Body.String(), err)
+	}
+	return res.Code, out
+}
+
+func TestDeleteMe(t *testing.T) {
+	api, mux := newTestAPI(t)
+
+	// guests cannot self-delete: the account survives the attempt
+	_, res := post(t, mux, "/api/v1/players", map[string]string{"nickname": "Doomed"}, "")
+	guestToken := data(res)["token"].(string)
+	if code, _ := del(t, mux, "/api/v1/me", map[string]string{"confirm": "DELETE"}, guestToken); code != 403 {
+		t.Fatalf("guest delete = %d, want 403", code)
+	}
+	if code, _ := get(t, mux, "/api/v1/me", guestToken); code != 200 {
+		t.Fatal("guest should survive a rejected delete")
+	}
+
+	// Google accounts delete through the same confirmation guard
+	_, token, err := api.Store.GoogleLogin("sub-doomed", "doomed@example.com", "Doomed", "")
+	if err != nil {
+		t.Fatalf("google login: %v", err)
+	}
+
+	// without the exact confirmation the account survives
+	if code, res := del(t, mux, "/api/v1/me", nil, token); code != 400 {
+		t.Fatalf("unconfirmed delete = %d %v, want 400", code, res)
+	}
+	if code, res := del(t, mux, "/api/v1/me", map[string]string{"confirm": "delete"}, token); code != 400 {
+		t.Fatalf("lowercase confirmation = %d %v, want 400", code, res)
+	}
+	if code, _ := get(t, mux, "/api/v1/me", token); code != 200 {
+		t.Fatal("player should still exist after rejected deletes")
+	}
+
+	if code, res := del(t, mux, "/api/v1/me", map[string]string{"confirm": "DELETE"}, token); code != 200 || data(res)["deleted"] != true {
+		t.Fatalf("delete me = %d %v, want 200 deleted", code, res)
+	}
+	// the session token dies with the account
+	if code, _ := get(t, mux, "/api/v1/me", token); code != 401 {
+		t.Fatalf("me after delete = %d, want 401", code)
+	}
 }
 
 func TestGuestRoundFlow(t *testing.T) {

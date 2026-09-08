@@ -9,8 +9,10 @@ const { t } = useI18n()
 
 const props = defineProps({
   show: { type: Boolean, default: false },
-  kind: { type: String, default: 'level' }, // level | tier
+  kind: { type: String, default: 'level' }, // level | tier | achievement
   value: { type: String, default: '' },
+  // achievement tier (bronze..legend) — colours the banner
+  tier: { type: String, default: '' },
 })
 
 const TIER_COLORS = {
@@ -21,9 +23,20 @@ const TIER_COLORS = {
   diamond: '#78a8f5',
   master: '#b283f0',
 }
-const tierColor = computed(() =>
-  props.kind === 'tier' ? (TIER_COLORS[props.value?.toLowerCase()] ?? TIER_COLORS.gold) : TIER_COLORS.gold
-)
+const ACH_TIER_COLORS = {
+  bronze: '#cd7f32',
+  silver: '#c0c0c0',
+  gold: '#ffd700',
+  platinum: '#7de3e1',
+  legend: '#b283f0',
+}
+const tierColor = computed(() => {
+  if (props.kind === 'achievement') {
+    return ACH_TIER_COLORS[props.tier?.toLowerCase()] ?? ACH_TIER_COLORS.bronze
+  }
+  if (props.kind === 'tier') return TIER_COLORS[props.value?.toLowerCase()] ?? TIER_COLORS.gold
+  return TIER_COLORS.gold
+})
 </script>
 
 <template>
@@ -35,10 +48,13 @@ const tierColor = computed(() =>
           <circle class="coin" cx="12" cy="14.6" r="6.1" fill="var(--tc)" stroke="rgba(255, 255, 255, 0.75)" stroke-width="1.2" />
           <path class="gleam" d="M12 11.2l1.1 2.3 2.5.3-1.85 1.75.5 2.5L12 16.8l-2.25 1.25.5-2.5L8.4 13.8l2.5-.3z" fill="rgba(255, 255, 255, 0.92)" />
         </svg>
+        <svg v-else-if="kind === 'achievement'" class="medal" viewBox="0 0 24 24" width="46" height="46" fill="none" aria-hidden="true">
+          <path class="star-big" d="M8 21h8M12 17v4M7 4h10v6a5 5 0 0 1-10 0V4zM7 5H4v1a3 3 0 0 0 3 3M17 5h3v1a3 3 0 0 1-3 3" stroke="var(--tc)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
         <svg v-else class="medal" viewBox="0 0 24 24" width="46" height="46" fill="none" aria-hidden="true">
           <path class="star-big" d="M12 2l2.9 6.2 6.6.8-4.9 4.6 1.3 6.6L12 17l-5.9 3.2 1.3-6.6L2.5 9l6.6-.8z" fill="var(--good)" stroke="rgba(255, 255, 255, 0.75)" stroke-width="1" />
         </svg>
-        <span class="section-title">{{ kind === 'level' ? t('levelUp') : t('tierUp') }}</span>
+        <span class="section-title">{{ kind === 'level' ? t('levelUp') : kind === 'achievement' ? t('achievementUnlocked') : t('tierUp') }}</span>
         <span class="value">{{ value }}</span>
       </div>
     </div>
@@ -68,9 +84,12 @@ const tierColor = computed(() =>
   animation: rise-in 0.28s var(--ease);
 }
 .banner.tier { border-color: color-mix(in srgb, var(--tc) 55%, transparent); }
+.banner.achievement { border-color: color-mix(in srgb, var(--tc) 55%, transparent); }
 .value { font-size: 1.8rem; font-weight: 600; letter-spacing: -0.02em; }
 .banner.level .value { color: var(--good); }
 .banner.tier .value { color: var(--tc); text-transform: capitalize; }
+/* achievement titles are long — keep them headline-sized, not giant */
+.banner.achievement .value { font-size: 1.15rem; color: var(--tc); }
 
 .medal {
   filter: drop-shadow(0 4px 14px rgba(0, 0, 0, 0.5));

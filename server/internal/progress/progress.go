@@ -65,6 +65,17 @@ func TierName(t int) string {
 	return tierNames[t]
 }
 
+// TierFromName parses a tier name ("bronze" … "master"); ok is false for
+// anything else. Backs the admin tier override stored on the player.
+func TierFromName(name string) (int, bool) {
+	for i, n := range tierNames {
+		if n == name {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
 // SingleHintQuota: hint budget for one single-player session (a visit to the
 // game, spanning all its hands), tier bonus included.
 func SingleHintQuota(tier int) int {

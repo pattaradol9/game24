@@ -111,11 +111,14 @@ select, .name-input {
   padding: 12px 14px;
   font: inherit;
   font-size: 0.95rem;
-  background: var(--bg);
+  /* background-color only — the shorthand would wipe the global select caret */
+  background-color: var(--bg);
   color: var(--text);
   outline: none;
 }
 select:focus, .name-input:focus { border-color: var(--accent); }
+/* the themed caret from the global stylesheet needs clear space on the right */
+select { padding-right: 38px; }
 .row-btns { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
 .row-btns .btn { padding-inline: 0; font-variant-numeric: tabular-nums; }
 input[type='range'] { width: 100%; accent-color: var(--accent); }

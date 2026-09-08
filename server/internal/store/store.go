@@ -56,6 +56,32 @@ func (s *Store) TryUseHint(roundID, playerID string) (int, error) {
 	return used, err
 }
 
+// migrateLegacyExpBoost carries the single-kind exp_boost row of installs
+// from before the coins boost existed into the boosts table (as the "exp"
+// kind) and drops the old table. No-op when exp_boost is absent.
+func (s *Store) migrateLegacyExpBoost() error {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'exp_boost'`).Scan(&n); err != nil {
+		return fmt.Errorf("store: migrate: %w", err)
+	}
+	if n == 0 {
+		return nil
+	}
+	if _, err := s.db.Exec(`ALTER TABLE exp_boost RENAME TO exp_boost_legacy`); err != nil {
+		return fmt.Errorf("store: migrate: %w", err)
+	}
+	// REPLACE, not IGNORE: the seeds for kind rows have already run by the
+	// time we get here, and the carried-over config must win over them
+	if _, err := s.db.Exec(`INSERT OR REPLACE INTO boosts (id, kind, multiplier, duration_min, label, enabled, starts_at, ends_at, updated_by, updated_at)
+		SELECT id, 'exp', multiplier, duration_min, label, enabled, starts_at, ends_at, updated_by, updated_at FROM exp_boost_legacy`); err != nil {
+		return fmt.Errorf("store: migrate: %w", err)
+	}
+	if _, err := s.db.Exec(`DROP TABLE exp_boost_legacy`); err != nil {
+		return fmt.Errorf("store: migrate: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) migrate() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS players (
@@ -96,13 +122,29 @@ func (s *Store) migrate() error {
 			finished_at TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS event_logs (
-			id     TEXT PRIMARY KEY,
-			ts     TEXT NOT NULL DEFAULT (datetime('now')),
-			actor  TEXT NOT NULL,
-			action TEXT NOT NULL,
-			target TEXT NOT NULL DEFAULT '',
-			detail TEXT NOT NULL DEFAULT ''
+		id     TEXT PRIMARY KEY,
+		ts     TEXT NOT NULL DEFAULT (datetime('now')),
+		actor  TEXT NOT NULL,
+		action TEXT NOT NULL,
+		target TEXT NOT NULL DEFAULT '',
+		detail TEXT NOT NULL DEFAULT ''
+	)`,
+		// server-wide boosts: one row per kind (EXP and coin payouts), an
+		// admin-authored draft that can be armed later
+		`CREATE TABLE IF NOT EXISTS boosts (
+			id           INTEGER PRIMARY KEY,
+			kind         TEXT NOT NULL UNIQUE,
+			multiplier   REAL NOT NULL DEFAULT 2,
+			duration_min INTEGER NOT NULL DEFAULT 60,
+			label        TEXT NOT NULL DEFAULT '',
+			enabled      INTEGER NOT NULL DEFAULT 0,
+			starts_at    TEXT,
+			ends_at      TEXT,
+			updated_by   TEXT NOT NULL DEFAULT '',
+			updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
+		`INSERT OR IGNORE INTO boosts (id, kind) VALUES (1, 'exp')`,
+		`INSERT OR IGNORE INTO boosts (id, kind) VALUES (2, 'coins')`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -118,12 +160,42 @@ func (s *Store) migrate() error {
 		`ALTER TABLE players ADD COLUMN banned_at TEXT`,
 		`ALTER TABLE players ADD COLUMN ban_reason TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE rounds ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
+		// coin economy + achievements + skins
+		`ALTER TABLE players ADD COLUMN total_coins INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE players ADD COLUMN total_wins INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE players ADD COLUMN skin TEXT NOT NULL DEFAULT ''`,
+		// admin tier override ('' = derive the tier from the level)
+		`ALTER TABLE players ADD COLUMN tier TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, q := range alters {
 		if _, err := s.db.Exec(q); err != nil {
 			if !strings.Contains(err.Error(), "duplicate column name") {
 				return fmt.Errorf("store: migrate: %w", err)
 			}
+		}
+	}
+	if err := s.migrateLegacyExpBoost(); err != nil {
+		return err
+	}
+	// Unlocked achievements and owned card skins live in their own tables so
+	// both the catalog views and the grant transactions stay single-purpose.
+	shopTables := []string{
+		`CREATE TABLE IF NOT EXISTS player_achievements (
+			player_id      TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+			achievement_id TEXT NOT NULL,
+			unlocked_at    TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (player_id, achievement_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS player_skins (
+			player_id   TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+			skin_id     TEXT NOT NULL,
+			acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
+			PRIMARY KEY (player_id, skin_id)
+		)`,
+	}
+	for _, q := range shopTables {
+		if _, err := s.db.Exec(q); err != nil {
+			return fmt.Errorf("store: migrate: %w", err)
 		}
 	}
 	indexes := []string{
