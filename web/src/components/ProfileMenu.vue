@@ -170,9 +170,9 @@ function onDeleted() {
             <span class="lbl">{{ t('achievements') }}</span>
             <Icon class="go" name="chevron-right" :size="14" />
           </RouterLink>
-          <RouterLink v-if="!player.isGuest" class="item" to="/skins" @click="close()">
-            <span class="ic"><Icon name="palette" :size="15" /></span>
-            <span class="lbl">{{ t('skinShop') }}</span>
+          <RouterLink v-if="!player.isGuest" class="item" to="/shop" @click="close()">
+            <span class="ic"><Icon name="bag" :size="15" /></span>
+            <span class="lbl">{{ t('shop') }}</span>
             <Icon class="go" name="chevron-right" :size="14" />
           </RouterLink>
           <button v-if="player.isAdmin" class="item admin" @click="close(); $router.push('/admin')">

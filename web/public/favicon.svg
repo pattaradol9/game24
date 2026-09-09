@@ -1,5 +1,23 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect x="4" y="4" width="56" height="56" rx="14" fill="#ff9f1c" stroke="#20233a" stroke-width="4"/>
-  <circle cx="32" cy="32" r="18" fill="#fffdf6" stroke="#20233a" stroke-width="3"/>
-  <text x="32" y="39" text-anchor="middle" font-family="Bangers, sans-serif" font-size="18" fill="#20233a">24</text>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#1a2233"/>
+      <stop offset="1" stop-color="#0d1119"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0" stop-color="#ffd27a"/>
+      <stop offset="0.58" stop-color="#f6b73c"/>
+      <stop offset="1" stop-color="#dc9a1f"/>
+    </linearGradient>
+  </defs>
+  <rect x="1" y="1" width="62" height="62" rx="14" fill="url(#tile)" stroke="#2c3550" stroke-width="1.5"/>
+  <g transform="translate(7.3 8.6) scale(0.95)">
+    <rect x="15" y="6" width="28" height="38" rx="5" fill="#f6b73c" opacity="0.3" transform="rotate(-26 29 44)"/>
+    <rect x="15" y="6" width="28" height="38" rx="5" fill="#f6b73c" opacity="0.55" transform="rotate(-13 29 44)"/>
+    <rect x="15" y="6" width="28" height="38" rx="5" fill="url(#card)"/>
+    <g fill="none" stroke="#241704" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" transform="translate(29 25.2) scale(1.2) translate(-29 -25.2)">
+      <path d="M19.4 22.6a3 3 0 1 1 5.8 1.3c-.6 2.1-5.8 3.7-5.8 7.3h6.4"/>
+      <path d="M35.5 19.2v12M35.5 19.2l-4.8 8.1h7.6"/>
+    </g>
+  </g>
 </svg>

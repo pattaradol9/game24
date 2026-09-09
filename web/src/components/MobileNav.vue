@@ -20,7 +20,7 @@ const LINKS = [
   { to: '/', icon: 'home', key: 'navHome' },
   { to: '/leaderboard', icon: 'crown', key: 'leaderboard' },
   { to: '/achievements', icon: 'trophy', key: 'achievements' },
-  { to: '/skins', icon: 'palette', key: 'skinShop' },
+  { to: '/shop', icon: 'bag', key: 'shop' },
 ]
 
 const isActive = (to) =>

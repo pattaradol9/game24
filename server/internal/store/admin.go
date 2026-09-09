@@ -818,11 +818,11 @@ var ErrInvalidBackup = errors.New("store: invalid backup")
 // order the INSERT pass runs (players first — the children reference it).
 // The first four are required in any valid snapshot; the shop tables may be
 // absent from backups taken before the economy shipped.
-var restoreTables = []string{"players", "player_mode_stats", "rounds", "event_logs", "player_achievements", "player_skins"}
+var restoreTables = []string{"players", "player_mode_stats", "rounds", "event_logs", "player_achievements", "player_skins", "player_items", "player_boosts"}
 
 // clearOrder deletes every application table row children-first, before the
 // copy pass refills them from the snapshot.
-var clearOrder = []string{"event_logs", "player_achievements", "player_skins", "player_mode_stats", "rounds", "players"}
+var clearOrder = []string{"event_logs", "player_achievements", "player_skins", "player_items", "player_boosts", "player_mode_stats", "rounds", "players"}
 
 // tableColumns returns the column names of a table in the given attached
 // schema (e.g. "main", "restore_src") in declaration order.

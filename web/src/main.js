@@ -77,17 +77,21 @@ const router = createRouter({
       },
     },
     {
-      path: '/skins',
-      component: () => import('./views/SkinShopView.vue'),
+      path: '/shop',
+      component: () => import('./views/ShopView.vue'),
       meta: {
         seo: {
-          title: { th: 'ชุดไพ่ · 24 Game', en: 'Card Skins · 24 Game' },
+          title: { th: 'ร้านค้า · 24 Game', en: 'Shop · 24 Game' },
           description: {
-            th: 'สะสมเหรียญจากการเล่นแล้วแลกชุดไพ่สุดพิเศษ 12 แบบ ตั้งแต่คลาสสิกถึงกาแล็กซี',
-            en: 'Earn coins by playing and trade them for 12 special card skins, from classic to galaxy.',
+            th: 'ร้านค้ารวมของ 24 Game — สะสมเหรียญแลกชุดไพ่สุดพิเศษ 12 แบบ และไอเทมบูสต์ EXP/เหรียญส่วนตัว พร้อมคลังไอเทมใช้งานได้ทันที',
+            en: 'The 24 Game shop — trade coins for 12 special card skins or consumable EXP/coin boost items, and manage your inventory.',
           },
         },
       },
+    },
+    {
+      path: '/skins',
+      redirect: '/shop',
     },
     {
       path: '/privacy',

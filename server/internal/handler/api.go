@@ -17,6 +17,7 @@ import (
 	"github.com/pattaradol9/game24/server/internal/auth"
 	"github.com/pattaradol9/game24/server/internal/config"
 	"github.com/pattaradol9/game24/server/internal/game"
+	"github.com/pattaradol9/game24/server/internal/items"
 	"github.com/pattaradol9/game24/server/internal/presence"
 	"github.com/pattaradol9/game24/server/internal/progress"
 	"github.com/pattaradol9/game24/server/internal/room"
@@ -59,28 +60,119 @@ type modeStatJSON struct {
 	CurrentStreak int64 `json:"currentStreak"`
 }
 
-// boostJSON is the player-facing view of one running server-wide boost: the
-// multiplier applied to the payout it names and when the window closes.
-type boostJSON struct {
-	Kind       string  `json:"kind"`
-	Multiplier float64 `json:"multiplier"`
-	EndsAt     string  `json:"endsAt"` // RFC3339, UTC
+// boostSourceJSON names one running boost source: a server-wide campaign
+// ("server") or the player's own consumable item ("item"). Item sources
+// carry the item id, its bilingual name and rarity tier so the buff tray can
+// colour the chip by rarity and explain itself on hover.
+type boostSourceJSON struct {
+	Origin     string   `json:"origin"`
+	Multiplier float64  `json:"multiplier"`
+	EndsAt     string   `json:"endsAt"` // RFC3339, UTC
+	Item       string   `json:"item,omitempty"`
+	Rarity     string   `json:"rarity,omitempty"`
+	Name       *textJSON `json:"name,omitempty"`
 }
 
-// boostViews collects every running boost (keyed by kind, e.g. "exp",
-// "coins"); it travels inside the player JSON and as the ws/player "boost"
-// push. Callers must not run it inside a store transaction.
+// boostJSON is the player-facing view of one payout kind's running boosts.
+// Multiplier is the additive stack of every listed source (a ×2 server boost
+// plus a ×2 personal item reads ×3); EndsAt is the farthest source's end.
+type boostJSON struct {
+	Kind       string            `json:"kind"`
+	Multiplier float64           `json:"multiplier"`
+	EndsAt     string            `json:"endsAt"` // RFC3339, UTC
+	Sources    []boostSourceJSON `json:"sources,omitempty"`
+}
+
+// boostViews collects every running server-wide boost (keyed by kind, e.g.
+// "exp", "coins"); it travels as the ws/player "boost" push. Callers must
+// not run it inside a store transaction.
 func (a *API) boostViews() map[string]boostJSON {
 	out := map[string]boostJSON{}
 	for _, kind := range []store.BoostKind{store.BoostKindExp, store.BoostKindCoins} {
 		if ab, active := a.Store.ActiveBoost(kind); active {
-			out[string(kind)] = boostJSON{
-				Kind: string(kind), Multiplier: ab.Multiplier,
-				EndsAt: ab.EndsAt.UTC().Format(time.RFC3339),
-			}
+			out[string(kind)] = a.boostView("server", ab)
 		}
 	}
 	return out
+}
+
+// serverSource renders a server-wide campaign as a tray source.
+func (a *API) serverSource(ab store.ActiveBoost) boostSourceJSON {
+	return boostSourceJSON{Origin: "server", Multiplier: ab.Multiplier, EndsAt: ab.EndsAt.UTC().Format(time.RFC3339)}
+}
+
+// itemSource renders a personal item boost as a tray source, enriched with
+// the item's bilingual name and rarity tier (best-effort: an item since
+// removed from the catalog keeps its window but loses the trimmings).
+func (a *API) itemSource(ab store.ActiveBoost) boostSourceJSON {
+	src := boostSourceJSON{Origin: "item", Multiplier: ab.Multiplier, EndsAt: ab.EndsAt.UTC().Format(time.RFC3339), Item: ab.ItemID}
+	if def, ok := items.ByID(ab.ItemID); ok {
+		src.Rarity = def.Rarity
+		src.Name = &textJSON{En: def.Name.En, Th: def.Name.Th}
+	}
+	return src
+}
+
+// boostView renders one active boost as its single-source view.
+func (a *API) boostView(origin string, ab store.ActiveBoost) boostJSON {
+	var src boostSourceJSON
+	if origin == "item" {
+		src = a.itemSource(ab)
+	} else {
+		src = a.serverSource(ab)
+	}
+	return boostJSON{Kind: string(ab.Kind), Multiplier: ab.Multiplier, EndsAt: src.EndsAt, Sources: []boostSourceJSON{src}}
+}
+
+// playerBoostViews is the per-player active view for the player JSON: every
+// running source of each kind — the server-wide campaigns and the player's
+// own item boosts — stacked additively (a ×2 server boost plus a ×2 item
+// pays ×3 total, never the compounded ×4). Item sources name their item,
+// bilingual name and rarity for the tray. Callers must not run it inside a
+// store transaction.
+func (a *API) playerBoostViews(playerID string) map[string]boostJSON {
+	type entry struct {
+		ends    time.Time
+		mult    float64
+		sources []boostSourceJSON
+	}
+	entries := map[string]*entry{}
+	add := func(src boostSourceJSON, ab store.ActiveBoost) {
+		e := entries[string(ab.Kind)]
+		if e == nil {
+			e = &entry{}
+			entries[string(ab.Kind)] = e
+		}
+		e.mult += ab.Multiplier - 1
+		if ab.EndsAt.After(e.ends) {
+			e.ends = ab.EndsAt
+		}
+		e.sources = append(e.sources, src)
+	}
+	for _, kind := range []store.BoostKind{store.BoostKindExp, store.BoostKindCoins} {
+		if ab, active := a.Store.ActiveBoost(kind); active {
+			add(a.serverSource(ab), ab)
+		}
+	}
+	// fixed kind order keeps the source list deterministic
+	for _, kind := range []store.BoostKind{store.BoostKindExp, store.BoostKindCoins} {
+		if ab, ok := a.Store.ActivePlayerBoost(playerID, kind); ok {
+			add(a.itemSource(ab), ab)
+		}
+	}
+	out := map[string]boostJSON{}
+	for k, e := range entries {
+		// each source banked its bonus (multiplier − 1); the base 1 turns the
+		// bonus sum back into the total payout multiplier
+		out[k] = boostJSON{Kind: k, Multiplier: 1 + e.mult, EndsAt: e.ends.UTC().Format(time.RFC3339), Sources: e.sources}
+	}
+	return out
+}
+
+// itemQtyJSON is one inventory stack in the player JSON.
+type itemQtyJSON struct {
+	ID  string `json:"id"`
+	Qty int64  `json:"qty"`
 }
 
 type playerJSON struct {
@@ -99,6 +191,7 @@ type playerJSON struct {
 	Tier       string                  `json:"tier"`
 	TierBonus  int                     `json:"tierHintBonus"` // single-player hint bonus
 	Boosts     map[string]boostJSON    `json:"boosts,omitempty"`
+	Items      []itemQtyJSON           `json:"items,omitempty"` // inventory stacks (signed-in players)
 	PerMode    map[string]modeStatJSON `json:"perMode"`
 }
 
@@ -122,9 +215,20 @@ func (a *API) toPlayerJSON(p store.Player) playerJSON {
 		Tier: progress.TierName(tier), TierBonus: progress.TierBonusQuota(tier),
 		PerMode: map[string]modeStatJSON{},
 	}
-	// two extra single-row reads; every open tab then sees its buff icons
-	// without another endpoint
-	out.Boosts = a.boostViews()
+	// the active-boost view stacks this player's item boosts on top of the
+	// server-wide ones; guests have no personal boosts to look up. The
+	// inventory rides along so every open tab sees its item counts without
+	// another endpoint.
+	if p.IsGuest {
+		out.Boosts = a.boostViews()
+	} else {
+		out.Boosts = a.playerBoostViews(p.ID)
+		if items, err := a.Store.PlayerItems(p.ID); err == nil {
+			for _, it := range items {
+				out.Items = append(out.Items, itemQtyJSON{ID: it.ID, Qty: it.Qty})
+			}
+		}
+	}
 	for mode, st := range p.Stats {
 		out.PerMode[mode] = modeStatJSON{
 			Exp: st.Exp, HandsSolved: st.HandsSolved, HandsSkipped: st.HandsSkipped,
@@ -219,6 +323,8 @@ func (a *API) Routes() chi.Router {
 		priv.Post("/rounds/{id}/hint", a.hintRound)
 		priv.Post("/skins/{id}/buy", a.buySkin)
 		priv.Post("/skins/{id}/equip", a.equipSkin)
+		priv.Post("/items/{id}/buy", a.buyItem)
+		priv.Post("/items/{id}/use", a.useItem)
 	})
 
 	r.Group(func(priv chi.Router) {
@@ -226,6 +332,7 @@ func (a *API) Routes() chi.Router {
 		priv.Post("/rooms", a.createRoom)
 		priv.Get("/achievements", a.achievements)
 		priv.Get("/skins", a.skinCatalog)
+		priv.Get("/items", a.itemCatalog)
 	})
 
 	// admin portal — 404s entirely when the ADMIN_EMAILS allowlist is empty

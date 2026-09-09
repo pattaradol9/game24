@@ -1,6 +1,6 @@
 // Session persistence + Google Identity Services integration.
 // Player state is a reactive ref so header/profile UI updates live.
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { api } from './api.js'
 
 const TOKEN_KEY = 'g24_token'
@@ -10,11 +10,91 @@ export const currentPlayer = ref(null)
 /**
  * The running server-wide boosts, keyed by payout kind — `{ exp: {...},
  * coins: {...} }`, each `{ kind, multiplier, endsAt }`. Kept in sync from
- * every player snapshot (`player.boosts`) and from `boost` pushes on the
- * realtime socket, so any open tab sees an event start and end without a
- * refresh.
+ * every player snapshot and from `boost` pushes on the realtime socket, so
+ * any open tab sees an event start and end without a refresh.
  */
-export const activeBoosts = ref({})
+export const serverBoosts = ref({})
+
+/**
+ * The player's own item boosts (same shape as the server-wide ones), armed
+ * by using an inventory item. They ride in every player snapshot's
+ * `boosts.sources`, so the split happens in `applyBoostSources`.
+ */
+export const itemBoosts = ref({})
+
+/**
+ * The combined active-boost view keyed by kind: every running source —
+ * server-wide and personal — stacked additively (`multiplier` =
+ * 1 + Σ(source − 1)), with `sources` naming where each bonus came from and
+ * `endsAt` the nearest change point (when the stack next thins out).
+ */
+export const activeBoosts = computed(() => mergeBoosts(serverBoosts.value, itemBoosts.value))
+
+/**
+ * Split a player-JSON boosts map (`{ kind: { sources: [...] } }`) back into
+ * its server-wide and personal halves. Item sources carry their item id,
+ * rarity and bilingual name through, so the tray can colour and explain
+ * itself. Pure, so tests can pin the shape.
+ */
+export function splitBoosts(map = {}) {
+  const server = {}
+  const item = {}
+  for (const b of Object.values(map)) {
+    for (const s of b.sources ?? []) {
+      const view = { kind: b.kind, multiplier: s.multiplier, endsAt: s.endsAt }
+      if (s.item) view.item = s.item
+      if (s.rarity) view.rarity = s.rarity
+      if (s.name) view.name = s.name
+      ;(s.origin === 'item' ? item : server)[b.kind] = view
+    }
+  }
+  return { server, item }
+}
+
+/**
+ * Stack two boost maps of the same shape additively per kind. Pure — the
+ * buff tray calls it every second with the still-alive entries so a source
+ * that expires simply stops contributing while the rest keep running.
+ */
+export function mergeBoosts(server = {}, item = {}) {
+  const out = {}
+  for (const [origin, map] of [['server', server], ['item', item]]) {
+    for (const [kind, b] of Object.entries(map)) {
+      const e = out[kind] ??= { kind, multiplier: 1, endsAt: b.endsAt, sources: [] }
+      e.multiplier += b.multiplier - 1
+      if (b.endsAt < e.endsAt) e.endsAt = b.endsAt
+      const src = { origin, multiplier: b.multiplier, endsAt: b.endsAt }
+      if (b.item) src.item = b.item
+      if (b.rarity) src.rarity = b.rarity
+      if (b.name) src.name = b.name
+      e.sources.push(src)
+    }
+  }
+  return out
+}
+
+function applyBoostSources(map) {
+  const { server, item } = splitBoosts(map)
+  serverBoosts.value = server
+  itemBoosts.value = item
+}
+
+/** Rarity tiers, low → high (mirrors the server's items catalog). */
+export const RARITY_ORDER = ['common', 'rare', 'epic', 'legend']
+
+/**
+ * The tray colour identity of one stacked cell: pure server campaigns get
+ * the reserved server teal, anything an item feeds takes the highest rarity
+ * among its item sources — so a cell reads its pedigree at a glance.
+ * Pure, for tests.
+ */
+export function boostColorKey(sources = []) {
+  const items = sources.filter((s) => s.origin === 'item')
+  if (!items.length) return 'server'
+  return items
+    .map((s) => s.rarity || 'common')
+    .sort((a, b) => RARITY_ORDER.indexOf(b) - RARITY_ORDER.indexOf(a))[0]
+}
 
 /**
  * Bumped whenever the player's public identity changes (rename, Google
@@ -34,21 +114,22 @@ export function getPlayer() {
 export function setSession(token, player) {
   localStorage.setItem(TOKEN_KEY, token)
   currentPlayer.value = player
-  activeBoosts.value = player?.boosts ?? {}
+  applyBoostSources(player?.boosts ?? {})
 }
 
 /** Refresh the signed-in player after a round banks its EXP. */
 export function updatePlayer(player) {
   if (player) {
     currentPlayer.value = player
-    activeBoosts.value = player.boosts ?? {}
+    applyBoostSources(player.boosts ?? {})
   }
 }
 
 export function clearSession() {
   localStorage.removeItem(TOKEN_KEY)
   currentPlayer.value = null
-  activeBoosts.value = {}
+  serverBoosts.value = {}
+  itemBoosts.value = {}
 }
 
 /**

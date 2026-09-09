@@ -116,11 +116,11 @@ function onRoomCreated(code, hostKey) {
         </span>
         <Icon class="qgo" name="chevron-right" :size="16" />
       </RouterLink>
-      <RouterLink to="/skins" class="panel quick-card">
-        <span class="qic skin"><Icon name="palette" :size="19" /></span>
+      <RouterLink to="/shop" class="panel quick-card">
+        <span class="qic skin"><Icon name="bag" :size="19" /></span>
         <span class="qtxt">
-          <b>{{ t('skinShop') }}</b>
-          <span class="qsub">{{ t('skinsHint') }}</span>
+          <b>{{ t('shop') }}</b>
+          <span class="qsub">{{ t('shopHint') }}</span>
         </span>
         <Icon class="qgo" name="chevron-right" :size="16" />
       </RouterLink>

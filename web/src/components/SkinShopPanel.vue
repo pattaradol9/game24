@@ -1,19 +1,20 @@
 <script setup>
-// Card skin shop: live card previews themed by the same --skin-* scopes the
-// game board uses, coin prices, and buy/equip against the player's balance.
-// Guests get the Google sign-in gate — the shop itself is readable by anyone.
+// Card-skin tab of the unified shop: live card previews themed by the same
+// --skin-* scopes the game board uses, coin prices, and buy/equip against
+// the player's balance. Guests get the Google sign-in gate — the shop itself
+// is readable by anyone. Page chrome (header, balance, tabs) lives in
+// ShopView; this panel only owns the skin grid.
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from '../i18n/index.js'
 import { api } from '../api.js'
 import { currentPlayer, getToken, updatePlayer } from '../auth.js'
-import { popText } from '../fx.js'
-import Brand from '../components/Brand.vue'
-import Icon from '../components/Icon.vue'
-import ProfileMenu from '../components/ProfileMenu.vue'
-import GoogleSignIn from '../components/GoogleSignIn.vue'
-import SiteFooter from '../components/SiteFooter.vue'
+import Icon from './Icon.vue'
+import GoogleSignIn from './GoogleSignIn.vue'
+import FxBackdrop from './FxBackdrop.vue'
 
 const { t, lang } = useI18n()
+
+const emit = defineEmits(['spent'])
 
 const loading = ref(true)
 const error = ref('')
@@ -24,8 +25,6 @@ const busyId = ref('')
 const actionError = ref('')
 
 // purchase confirmation + deduction feedback state
-const rootEl = ref(null)
-const balanceEl = ref(null)
 const confirming = ref(null) // skin awaiting purchase confirmation
 const justBought = ref('')
 let justBoughtTimer = 0
@@ -97,17 +96,13 @@ function closeConfirm() {
   actionError.value = ''
 }
 
-/* Purchase feedback: the balance chip pulses and a "-N" pops off it — the
-   deduction amount is the whole message, no coin-flight theatrics. */
+/* Purchase feedback: the card glows and the page header (which owns the
+   balance chip) pops the "-N" deduction off it. */
 function celebratePurchase(s, from, to) {
   justBought.value = s.id
   clearTimeout(justBoughtTimer)
   justBoughtTimer = setTimeout(() => { if (justBought.value === s.id) justBought.value = '' }, 2200)
-  if (from === to) return
-  const chip = balanceEl.value?.getBoundingClientRect()
-  const x = chip ? Math.min(Math.max(chip.left + chip.width / 2, 44), innerWidth - 44) : innerWidth / 2
-  const y = chip ? Math.min(Math.max(chip.top + chip.height / 2, 26), innerHeight - 26) : 44
-  popText(x, y, `-${fmt(from - to)}`, 'fx-merge gold')
+  if (from !== to) emit('spent', from, to)
 }
 
 onUnmounted(() => clearTimeout(justBoughtTimer))
@@ -141,109 +136,98 @@ async function equip(s) {
 function onSignedIn() {
   load()
 }
+defineExpose({ reload: load })
 </script>
 
 <template>
-  <main ref="rootEl" class="wrap page">
-    <header class="top">
-      <button class="btn back" @click="$router.push('/')">
-        <Icon name="back" :size="18" /><span class="back-label">{{ t('exit') }}</span>
-      </button>
-      <Brand size="sm" />
-      <div class="spacer" />
-      <span v-if="player" ref="balanceEl" class="chip accent" :title="t('balance')">
-        <Icon name="coin" :size="18" />
-        <b class="num">{{ fmt(balance) }}</b>
-      </span>
-      <ProfileMenu />
-    </header>
+  <section class="panel body">
+    <FxBackdrop variant="atelier" />
+    <div class="content">
+    <div class="head">
+      <h1>{{ t('shopTabSkins') }}</h1>
+      <span class="hint">{{ t('skinsHint') }}</span>
+    </div>
+    <p v-if="error" class="err">{{ error }}</p>
 
-    <section class="panel body">
-      <div class="head">
-        <h1>{{ t('skinShop') }}</h1>
-      </div>
+    <!-- guests read the shop but need a Google account to buy/equip -->
+    <div v-if="!signedIn" class="gate">
+      <Icon name="lock" :size="20" />
+      <p>{{ t('skinSignInRequired') }}</p>
+      <GoogleSignIn @signed-in="onSignedIn" />
+    </div>
 
-      <p v-if="error" class="err">{{ error }}</p>
+    <p v-if="signedIn && actionError" class="err">{{ actionError }}</p>
 
-      <!-- guests read the shop but need a Google account to buy/equip -->
-      <div v-if="!signedIn" class="gate">
-        <Icon name="lock" :size="20" />
-        <p>{{ t('skinSignInRequired') }}</p>
-        <GoogleSignIn @signed-in="onSignedIn" />
-      </div>
+    <div v-if="loading" class="loading">…</div>
+    <div v-else class="grid" @pointermove="onPreviewMove">
+      <article
+        v-for="s in skins"
+        :key="s.id"
+        class="skin-card"
+        :class="['r-' + s.rarity, { equipped: isEquipped(s), bought: justBought === s.id }]"
+        :data-skin="s.id"
+      >
+        <div class="preview" :class="'skin-' + s.id">
+          <!-- a faithful miniature of the real CardTile: same anatomy
+               (holo, frame, corner indices, watermark, rank) so the shop
+               shows the card you will actually play -->
+          <span class="pcard">
+            <i class="holo" aria-hidden="true" />
+            <i class="pframe" aria-hidden="true" />
+            <span class="idx tl"><b class="num">7</b><svg class="pip" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path :d="HEART" /></svg></span>
+            <svg class="watermark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path :d="HEART" /></svg>
+            <b class="rank num">7</b>
+            <span class="idx br"><b class="num">7</b><svg class="pip" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path :d="HEART" /></svg></span>
+          </span>
+        </div>
 
-      <p v-if="signedIn && actionError" class="err">{{ actionError }}</p>
-
-      <div v-if="loading" class="loading">…</div>
-      <div v-else class="grid" @pointermove="onPreviewMove">
-        <article
-          v-for="s in skins"
-          :key="s.id"
-          class="skin-card"
-          :class="{ equipped: isEquipped(s), bought: justBought === s.id }"
-          :data-skin="s.id"
-        >
-          <div class="preview" :class="'skin-' + s.id">
-            <!-- a faithful miniature of the real CardTile: same anatomy
-                 (holo, frame, corner indices, watermark, rank) so the shop
-                 shows the card you will actually play -->
-            <span class="pcard">
-              <i class="holo" aria-hidden="true" />
-              <i class="pframe" aria-hidden="true" />
-              <span class="idx tl"><b class="num">7</b><svg class="pip" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path :d="HEART" /></svg></span>
-              <svg class="watermark" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path :d="HEART" /></svg>
-              <b class="rank num">7</b>
-              <span class="idx br"><b class="num">7</b><svg class="pip" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path :d="HEART" /></svg></span>
-            </span>
+        <div class="info">
+          <div class="skin-top">
+            <b class="skin-name">{{ s.name }}</b>
+            <span class="rarity" :class="'r-' + s.rarity">{{ t(rarityKey(s.rarity)) }}</span>
           </div>
+          <p class="skin-desc">{{ bi(s.desc) }}</p>
 
-          <div class="info">
-            <div class="skin-top">
-              <b class="skin-name">{{ s.name }}</b>
-              <span class="rarity" :class="'r-' + s.rarity">{{ t(rarityKey(s.rarity)) }}</span>
-            </div>
-            <p class="skin-desc">{{ bi(s.desc) }}</p>
+          <div class="foot">
+            <span v-if="s.price === 0" class="chip">{{ t('skinDefault') }}</span>
+            <span v-else-if="!isOwned(s)" class="chip" :class="{ poor: signedIn && !canAfford(s) }">
+              <Icon name="coin" :size="18" />
+              <b class="num">{{ fmt(s.price) }}</b>
+            </span>
+            <span v-else class="chip">{{ t('owned') }}</span>
 
-            <div class="foot">
-              <span v-if="s.price === 0" class="chip">{{ t('skinDefault') }}</span>
-              <span v-else-if="!isOwned(s)" class="chip" :class="{ poor: signedIn && !canAfford(s) }">
-                <Icon name="coin" :size="18" />
-                <b class="num">{{ fmt(s.price) }}</b>
-              </span>
-              <span v-else class="chip">{{ t('owned') }}</span>
-
-              <button
-                v-if="isEquipped(s)"
-                class="btn equipped-btn"
-                disabled
-              >
-                <Icon name="check" :size="15" />{{ t('equipped') }}
-              </button>
-              <button
-                v-else-if="isOwned(s)"
-                class="btn equip-btn"
-                :disabled="!signedIn || busyId === s.id"
-                @click="equip(s)"
-              >
-                {{ t('equip') }}
-              </button>
-              <button
-                v-else
-                class="btn buy-btn"
-                :disabled="!signedIn || busyId === s.id || !canAfford(s)"
-                @click="askBuy(s)"
-              >
-                <Icon name="coin" :size="20" />{{ t('buy') }}
-              </button>
-            </div>
+            <button
+              v-if="isEquipped(s)"
+              class="btn equipped-btn"
+              disabled
+            >
+              <Icon name="check" :size="15" />{{ t('equipped') }}
+            </button>
+            <button
+              v-else-if="isOwned(s)"
+              class="btn equip-btn"
+              :disabled="!signedIn || busyId === s.id"
+              @click="equip(s)"
+            >
+              {{ t('equip') }}
+            </button>
+            <button
+              v-else
+              class="btn buy-btn"
+              :disabled="!signedIn || busyId === s.id || !canAfford(s)"
+              @click="askBuy(s)"
+            >
+              <Icon name="coin" :size="20" />{{ t('buy') }}
+            </button>
+          </div>
           </div>
         </article>
-      </div>
-    </section>
+    </div>
+    </div>
 
     <!-- purchase confirmation: skin, price, and the balance that remains -->
     <div v-if="confirming" class="overlay" @click.self="closeConfirm">
-      <div class="panel confirm" role="dialog" :aria-label="t('confirmBuy')">
+      <div class="panel confirm" :class="'r-' + confirming.rarity" role="dialog" :aria-label="t('confirmBuy')">
         <span class="confirm-title">{{ t('confirmBuy') }}</span>
         <div class="confirm-target">
           <div class="preview" :class="'skin-' + confirming.id">
@@ -281,27 +265,16 @@ function onSignedIn() {
         </div>
       </div>
     </div>
-
-    <SiteFooter />
-  </main>
+  </section>
 </template>
 
 <style scoped>
-.page { display: flex; flex-direction: column; gap: 20px; padding: 20px 0 56px; }
-/* sticky so the balance chip (and the "-N" deduction pop) stays visible no
-   matter how far the grid is scrolled */
-.top {
-  display: flex; align-items: center; gap: 12px;
-  position: sticky; top: 0; z-index: 40;
-  margin: -20px 0 0;
-  padding: 18px 0 12px;
-}
-.spacer { flex: 1; }
-.back { padding: 12px 16px 12px 13px; gap: 7px; color: var(--text-dim); }
-@media (hover: hover) { .back:hover { color: var(--text); } }
-.body { display: flex; flex-direction: column; gap: 18px; padding: 26px 28px 30px; }
+.body { position: relative; overflow: hidden; padding: 26px 28px 30px; }
+/* the WebGL ambience lives on .body (z 0); the content rides above it */
+.content { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 18px; }
+.head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
-.head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.hint { font-size: 0.8rem; color: var(--text-mute); }
 .err { color: var(--bad); font-size: 0.85rem; }
 .loading { text-align: center; color: var(--text-mute); font-size: 1.4rem; padding: 60px 0; }
 
@@ -325,14 +298,49 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 14px;
 }
+/* rarity palette shared with the item tabs. The tier dials scale the aura
+   with prestige: --r-line tints the card border, --r-wash the corner wash,
+   --r-haze the resting outer glow. */
+.r-common { --rc: var(--text-dim); --r-line: 22%; --r-wash: 12%; --r-haze: 8%; }
+.r-rare { --rc: var(--info); --r-line: 48%; --r-wash: 22%; --r-haze: 16%; }
+.r-epic { --rc: #b283f0; --r-line: 58%; --r-wash: 28%; --r-haze: 20%; }
+.r-legend { --rc: var(--accent); --r-line: 66%; --r-wash: 32%; --r-haze: 24%; }
+
 .skin-card {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 14px;
   border: 1px solid var(--line);
-  background: var(--surface-2);
+  /* the rarity reads before anything else: the border drinks --rc and the
+     card sits in a soft halo of its tier colour */
+  border-color: color-mix(in srgb, var(--rc) var(--r-line), var(--line));
+  box-shadow: 0 4px 20px color-mix(in srgb, var(--rc) var(--r-haze), transparent);
+  /* translucent so the atelier cards and glitter behind shimmer through */
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--surface-2) 78%, transparent),
+    color-mix(in srgb, var(--surface-2) 94%, transparent));
   border-radius: var(--r-md);
   padding: 14px 16px;
+  overflow: hidden;
+}
+/* rarity wash bleeding in from the preview edge */
+.skin-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(46% 90% at 0% 50%, color-mix(in srgb, var(--rc) calc(var(--r-wash) * 1.5), transparent), transparent 74%),
+    linear-gradient(102deg, color-mix(in srgb, var(--rc) var(--r-wash), transparent), transparent 52%);
+  pointer-events: none;
+}
+/* legend is the only tier that breathes — the halo slowly pulses */
+@media (prefers-reduced-motion: no-preference) {
+  .skin-card.r-legend { animation: rarity-breathe 3.6s ease-in-out infinite; }
+}
+@keyframes rarity-breathe {
+  0%, 100% { box-shadow: 0 4px 18px color-mix(in srgb, var(--rc) calc(var(--r-haze) * 0.6), transparent); }
+  50% { box-shadow: 0 6px 26px color-mix(in srgb, var(--rc) calc(var(--r-haze) * 2), transparent); }
 }
 .skin-card.equipped {
   border-color: rgba(246, 183, 60, 0.45);
@@ -350,7 +358,9 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
   width: 96px;
   height: 130px;
   border-radius: 10px;
-  border: 1px solid var(--line);
+  /* the rarity rings the preview: tier-tinted frame plus a soft halo */
+  border: 1px solid color-mix(in srgb, var(--rc, var(--line)) 45%, var(--line));
+  box-shadow: 0 0 18px color-mix(in srgb, var(--rc, transparent) 20%, transparent);
   overflow: hidden;
   background: linear-gradient(160deg, var(--surface-3), var(--surface-2));
 }
@@ -495,14 +505,14 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
   border-radius: var(--r-full);
   padding: 3px 8px;
   line-height: 1;
-  border: 1px solid var(--line);
-  color: var(--text-dim);
-  background: var(--surface-3);
+  color: var(--rc, var(--text-dim));
+  border: 1px solid color-mix(in srgb, var(--rc, var(--text-dim)) 40%, transparent);
+  background: color-mix(in srgb, var(--rc, var(--text-dim)) 10%, transparent);
 }
-.rarity.r-common { color: var(--text-dim); }
-.rarity.r-rare { color: var(--info); border-color: rgba(106, 165, 240, 0.4); background: rgba(106, 165, 240, 0.1); }
-.rarity.r-epic { color: #b283f0; border-color: rgba(178, 131, 240, 0.4); background: rgba(178, 131, 240, 0.1); }
-.rarity.r-legend { color: var(--accent); border-color: rgba(246, 183, 60, 0.4); background: var(--accent-soft); }
+/* the top tiers badge their own light */
+.rarity.r-epic, .rarity.r-legend {
+  box-shadow: 0 0 12px color-mix(in srgb, var(--rc) 35%, transparent);
+}
 
 .skin-desc {
   font-size: 0.78rem;
@@ -623,8 +633,6 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
 }
 
 @media (max-width: 560px) {
-  .back-label { display: none; }
-  .back { padding: 0; width: 44px; justify-content: center; }
   .body { padding: 20px 16px 24px; }
   .grid { grid-template-columns: 1fr; }
 }

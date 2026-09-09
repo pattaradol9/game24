@@ -30,9 +30,9 @@ func CoinsForHand(points int64) int64 {
 type AwardResult struct {
 	Stat ModeStat
 	// ExpEarned and CoinsEarned are what the hand itself paid into the
-	// ledgers — base amounts with the server-wide boost multipliers already
-	// applied. Achievement rewards banked in the same call are not part of
-	// them.
+	// ledgers — base amounts with every boost multiplier (server-wide and
+	// the player's own items) already applied. Achievement rewards banked
+	// in the same call are not part of them.
 	ExpEarned   int64
 	CoinsEarned int64
 	TotalExp    int64

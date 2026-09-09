@@ -192,10 +192,41 @@ func (s *Store) migrate() error {
 			acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
 			PRIMARY KEY (player_id, skin_id)
 		)`,
+		// consumable boost items: one stacked qty per catalog item
+		`CREATE TABLE IF NOT EXISTS player_items (
+			player_id TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+			item_id   TEXT NOT NULL,
+			qty       INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (player_id, item_id)
+		)`,
+		// personal boost windows armed by using an item (one per kind — a
+		// kind holds a single window: activating another item of the kind
+		// replaces it; a window simply expires when ends_at passes)
+		`CREATE TABLE IF NOT EXISTS player_boosts (
+			player_id  TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+			kind       TEXT NOT NULL,
+			multiplier REAL NOT NULL,
+			ends_at    TEXT,
+			item_id    TEXT NOT NULL DEFAULT '',
+			PRIMARY KEY (player_id, kind)
+		)`,
 	}
 	for _, q := range shopTables {
 		if _, err := s.db.Exec(q); err != nil {
 			return fmt.Errorf("store: migrate: %w", err)
+		}
+	}
+	// column additions for the shop tables themselves — they can only run
+	// once the tables exist (fresh installs already get them from the CREATE
+	// above and swallow the duplicate-column error)
+	for _, q := range []string{
+		// which item armed a personal boost ('' = predates item tracking)
+		`ALTER TABLE player_boosts ADD COLUMN item_id TEXT NOT NULL DEFAULT ''`,
+	} {
+		if _, err := s.db.Exec(q); err != nil {
+			if !strings.Contains(err.Error(), "duplicate column name") {
+				return fmt.Errorf("store: migrate: %w", err)
+			}
 		}
 	}
 	indexes := []string{

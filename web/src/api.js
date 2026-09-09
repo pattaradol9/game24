@@ -43,4 +43,7 @@ export const api = {
   skins: (token) => request('/skins', { token }),
   buySkin: (id, token) => request('/skins/' + id + '/buy', { method: 'POST', body: {}, token }),
   equipSkin: (id, token) => request('/skins/' + id + '/equip', { method: 'POST', body: {}, token }),
+  items: (token) => request('/items', { token }),
+  buyItem: (id, token) => request('/items/' + id + '/buy', { method: 'POST', body: {}, token }),
+  useItem: (id, token, count = 1) => request('/items/' + id + '/use', { method: 'POST', body: { count }, token }),
 }

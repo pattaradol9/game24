@@ -258,9 +258,10 @@ func (s *Store) RenamePlayer(actor, playerID, nickname string) (Player, error) {
 }
 
 // deletePlayer removes the player row; every dependent table (mode stats,
-// rounds, achievements, owned skins) cascades and the session token dies with
-// the row. The event log keeps a non-PII record — the action name tells
-// admin deletions from self-service ones.
+// rounds, achievements, owned skins, item inventory, personal boost windows)
+// cascades and the session token dies with the row. The event log keeps a
+// non-PII record — the action name tells admin deletions from self-service
+// ones.
 func (s *Store) deletePlayer(actor, action, playerID string) error {
 	p, err := s.PlayerByID(playerID)
 	if errors.Is(err, ErrNotFound) {
@@ -311,16 +312,17 @@ func (s *Store) ModeStats(playerID string) (map[string]ModeStat, error) {
 // AwardEXP updates both ledgers in one transaction: per-mode stats for the
 // leaderboard and the player's total EXP for level/tier. solved=false records
 // a skip (resets streak, awards nothing). Solved hands also earn coins
-// (CoinsForHand), mirroring how EXP tracks every finished hand. Live
-// server-wide boosts multiply what the hand pays — the EXP boost its EXP, the
-// coin boost its coins.
+// (CoinsForHand), mirroring how EXP tracks every finished hand. Live boosts
+// multiply what the hand pays — server-wide campaigns and the player's own
+// item boosts stack additively (a ×2 server boost plus a ×2 item pays ×3,
+// never the compounded ×4).
 func (s *Store) AwardEXP(playerID, mode string, points int64, solved bool) (ModeStat, int64, error) {
 	st, total, _, err := s.awardEXP(playerID, mode, points, solved)
 	return st, total, err
 }
 
 // handPayout is what one solved hand banks before achievement rewards:
-// base amounts with the server-wide boost multipliers already applied.
+// base amounts with every boost multiplier already applied.
 type handPayout struct {
 	ExpGain  int64
 	CoinGain int64
@@ -331,13 +333,8 @@ func (s *Store) awardEXP(playerID, mode string, points int64, solved bool) (Mode
 	// holds a single connection and a query inside the tx would deadlock
 	payout := handPayout{CoinGain: CoinsForHand(points)}
 	if solved {
-		payout.ExpGain = points
-		if boost, active := s.ActiveBoost(BoostKindExp); active {
-			payout.ExpGain = BoostAmount(points, boost.Multiplier)
-		}
-		if boost, active := s.ActiveBoost(BoostKindCoins); active {
-			payout.CoinGain = BoostAmount(CoinsForHand(points), boost.Multiplier)
-		}
+		payout.ExpGain = BoostAmount(points, s.payoutMultiplier(playerID, BoostKindExp))
+		payout.CoinGain = BoostAmount(CoinsForHand(points), s.payoutMultiplier(playerID, BoostKindCoins))
 	}
 	tx, err := s.db.Begin()
 	if err != nil {

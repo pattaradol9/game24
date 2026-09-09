@@ -11,12 +11,12 @@
 // watcher once from main.js; the rest stays pure for tests.
 import { watch } from 'vue'
 import {
-  activeBoosts,
   currentPlayer,
   clearSession,
   getToken,
   markBanned,
   playerIdentityVersion,
+  serverBoosts,
   updatePlayer,
 } from './auth.js'
 
@@ -60,9 +60,10 @@ export function applyEvent(type, data = {}) {
     // stops the reconnect loop by emptying the session)
     markBanned()
   } else if (type === 'boost') {
-    // a server-wide boost was armed, stopped or retuned — the payload is
-    // the full active view, so replace it wholesale
-    activeBoosts.value = data.boosts ?? {}
+    // a server-wide boost was armed, stopped or retuned — the payload is the
+    // full server view, so replace that half wholesale; personal item
+    // boosts are per-player and only ever travel in player snapshots
+    serverBoosts.value = data.boosts ?? {}
   } else if (type === 'deleted') {
     // account vanished under us (admin delete or self-delete elsewhere)
     clearSession()

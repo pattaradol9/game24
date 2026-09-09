@@ -316,8 +316,9 @@ export function makeTextures(THREE) {
 /* ====================================================== shared primitives */
 
 /** GPU-driven Points cloud: drift + wrap + sway + twinkle all live in the
- *  vertex shader, so the CPU touches nothing per frame. */
-function gpuCloud(api, o) {
+ *  vertex shader, so the CPU touches nothing per frame. Exported for the
+ *  sibling scene modules (itemFx) that want the same weather. */
+export function gpuCloud(api, o) {
   const { THREE, back, owned, rand, w0 } = api
   const {
     count, colors,
@@ -395,7 +396,7 @@ function gpuCloud(api, o) {
 }
 
 /** Soft billboard (Sprite). Returns { obj, mat } for per-frame tweaks. */
-function sprite(api, { tex, color = 0xffffff, scale = 2, scaleY = scale, pos = [0, 0, -2], opacity = 1, blending = 'additive', scene = null }) {
+export function sprite(api, { tex, color = 0xffffff, scale = 2, scaleY = scale, pos = [0, 0, -2], opacity = 1, blending = 'additive', scene = null }) {
   const { THREE, back, owned } = api
   const mat = new THREE.SpriteMaterial({
     map: tex,
@@ -435,7 +436,7 @@ function shaderPlane(api, { w, h, pos = [0, 0, -2], rot = [0, 0, 0], frag, unifo
 }
 
 /** Stars that flare up at random spots on a slow cycle (gold/royal/galaxy). */
-function glintCycler(api, { n = 3, color = 0xffffff, scale = 0.85, anchors = null, period = 11, z = -1.2 }) {
+export function glintCycler(api, { n = 3, color = 0xffffff, scale = 0.85, anchors = null, period = 11, z = -1.2 }) {
   const { rand, w0 } = api
   const items = []
   for (let i = 0; i < n; i++) {

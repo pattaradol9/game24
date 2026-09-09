@@ -3,7 +3,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { applyEvent, nextBackoffMs } from './realtime.js'
-import { activeBoosts, banNotice, clearSession, currentPlayer, playerIdentityVersion } from './auth.js'
+import {
+  activeBoosts,
+  banNotice,
+  boostColorKey,
+  clearSession,
+  currentPlayer,
+  itemBoosts,
+  playerIdentityVersion,
+  serverBoosts,
+  splitBoosts,
+} from './auth.js'
 
 // auth.js touches localStorage inside clearSession; node tests have none
 globalThis.localStorage ??= {
@@ -11,7 +21,6 @@ globalThis.localStorage ??= {
   setItem: () => {},
   removeItem: () => {},
 }
-
 test('nextBackoffMs grows exponentially, stays within the cap and jitters', () => {
   // full jitter: half to 1.5x the exponential step
   assert.equal(nextBackoffMs(0, () => 0), 500)
@@ -71,19 +80,72 @@ test('applyEvent error/account banned acts like a live ban push', () => {
   assert.equal(currentPlayer.value.nickname, 'Kept')
 })
 
-test('applyEvent boost replaces the shared active-boost view', () => {
-  const exp = { kind: 'exp', multiplier: 2.5, endsAt: '2026-09-10T12:00:00Z' }
+test('applyEvent boost replaces the server half and keeps item boosts', () => {
+  const exp = { kind: 'exp', multiplier: 2.5, endsAt: '2999-01-01T12:00:00Z' }
   applyEvent('boost', { boosts: { exp } })
-  // the ref wraps objects in a reactive proxy — compare by structure
-  assert.deepEqual(activeBoosts.value, { exp })
-  // arming a second kind keeps the first; the payload is the full view
-  const coins = { kind: 'coins', multiplier: 3, endsAt: '2026-09-11T12:00:00Z' }
+  // the payload is the full server-wide view — that half is replaced wholesale
+  assert.deepEqual(serverBoosts.value, { exp })
+  // a personal item boost rides on top; the bonuses add, never compound
+  const itemExp = { kind: 'exp', multiplier: 2, endsAt: '2999-01-02T12:00:00Z' }
+  itemBoosts.value = { exp: itemExp }
+  assert.equal(activeBoosts.value.exp.multiplier, 3.5)
+  assert.deepEqual(activeBoosts.value.exp.sources, [
+    { origin: 'server', multiplier: 2.5, endsAt: exp.endsAt },
+    { origin: 'item', multiplier: 2, endsAt: itemExp.endsAt },
+  ])
+  // endsAt points at the next change (the source that expires first)
+  assert.equal(activeBoosts.value.exp.endsAt, exp.endsAt)
+  // arming a second kind keeps the first; the payload is the full server view
+  const coins = { kind: 'coins', multiplier: 3, endsAt: '2999-01-03T12:00:00Z' }
   applyEvent('boost', { boosts: { exp, coins } })
-  assert.deepEqual(activeBoosts.value, { exp, coins })
-  // an empty view = every event ended
+  assert.deepEqual(serverBoosts.value, { exp, coins })
+  assert.equal(activeBoosts.value.coins.multiplier, 3)
+  // an empty view = every server event ended; the personal boost keeps running
   applyEvent('boost', { boosts: {} })
-  assert.deepEqual(activeBoosts.value, {})
-  activeBoosts.value = {} // leave the shared refs clean for the next test run
+  assert.deepEqual(serverBoosts.value, {})
+  assert.equal(activeBoosts.value.exp.multiplier, 2)
+  itemBoosts.value = {} // leave the shared refs clean for the next test run
+})
+
+test('splitBoosts tears a player snapshot back into its two halves', () => {
+  const snapshot = {
+    exp: {
+      kind: 'exp',
+      multiplier: 3,
+      endsAt: '2999-01-04T12:00:00Z',
+      sources: [
+        { origin: 'server', multiplier: 2, endsAt: '2999-01-01T12:00:00Z' },
+        { origin: 'item', multiplier: 2, endsAt: '2999-01-04T12:00:00Z', item: 'exp2', rarity: 'common', name: { en: 'EXP Tonic', th: 'โทนิค EXP' } },
+      ],
+    },
+  }
+  const { server, item } = splitBoosts(snapshot)
+  assert.deepEqual(server, { exp: { kind: 'exp', multiplier: 2, endsAt: '2999-01-01T12:00:00Z' } })
+  assert.deepEqual(item, {
+    exp: { kind: 'exp', multiplier: 2, endsAt: '2999-01-04T12:00:00Z', item: 'exp2', rarity: 'common', name: { en: 'EXP Tonic', th: 'โทนิค EXP' } },
+  })
+  // and a player push lands in both refs through updatePlayer
+  currentPlayer.value = { id: 'p1', nickname: 'P' }
+  applyEvent('player', { player: { id: 'p1', nickname: 'P', boosts: snapshot } })
+  assert.equal(serverBoosts.value.exp.multiplier, 2)
+  assert.equal(itemBoosts.value.exp.multiplier, 2)
+  serverBoosts.value = {}
+  itemBoosts.value = {}
+})
+
+test('boostColorKey: server teal unless an item feeds the stack', () => {
+  const server = [{ origin: 'server', multiplier: 2, endsAt: '2999-01-01T00:00:00Z' }]
+  assert.equal(boostColorKey(server), 'server')
+  assert.equal(boostColorKey([]), 'server')
+  // an item-driven stack wears the highest rarity among its item sources
+  const mixed = [
+    ...server,
+    { origin: 'item', multiplier: 2, rarity: 'common', endsAt: '2999-01-02T00:00:00Z' },
+    { origin: 'item', multiplier: 5, rarity: 'epic', endsAt: '2999-01-03T00:00:00Z' },
+  ]
+  assert.equal(boostColorKey(mixed), 'epic')
+  // item sources without a rarity (catalog since removed) fall back to common
+  assert.equal(boostColorKey([{ origin: 'item', multiplier: 2, endsAt: '2999-01-02T00:00:00Z' }]), 'common')
 })
 
 test('applyEvent ignores unknown types and malformed payloads', () => {

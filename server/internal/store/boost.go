@@ -70,11 +70,14 @@ type Boost struct {
 }
 
 // ActiveBoost is the player-facing view: the multiplier applied to every
-// solved hand's payout and when the window closes.
+// solved hand's payout and when the window closes. Personal (item) boosts
+// also carry the item that armed them — server-wide campaigns leave it
+// empty.
 type ActiveBoost struct {
 	Kind       BoostKind
 	Multiplier float64
 	EndsAt     time.Time
+	ItemID     string // item armed this window ('' = server-wide campaign)
 }
 
 // BoostAmount maps a base payout through the multiplier, rounded to the
@@ -99,11 +102,11 @@ func (s *Store) ActiveBoost(kind BoostKind) (ActiveBoost, bool) {
 		string(kind)).
 		Scan(&m, &endsStr)
 	if err != nil {
-		return ActiveBoost{}, false
+		return ActiveBoost{Kind: kind}, false
 	}
 	ends := parseDBTime(endsStr)
 	if ends.IsZero() {
-		return ActiveBoost{}, false
+		return ActiveBoost{Kind: kind}, false
 	}
 	return ActiveBoost{Kind: kind, Multiplier: m, EndsAt: ends}, true
 }
