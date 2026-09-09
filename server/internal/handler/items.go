@@ -18,10 +18,10 @@ import (
 	"github.com/pattaradol9/game24/server/internal/store"
 )
 
-// maxUseCount bounds the units one use request may spend. The 24h window cap
-// makes anything past ~96 (24h of the shortest item) pointless; 200 is a
-// generous sanity bound over that.
-const maxUseCount = 200
+// maxItemCount bounds the units one buy/use request may move. The 24h window
+// cap makes anything past ~96 (24h of the shortest item) pointless for use;
+// 200 is a generous sanity bound over that.
+const maxItemCount = 200
 
 type itemJSON struct {
 	ID          string   `json:"id"`
@@ -79,8 +79,10 @@ func (a *API) itemCatalog(w http.ResponseWriter, r *http.Request) {
 	ok(w, resp)
 }
 
-// buyItem exchanges coins for one more unit of an item. Guests are refused
-// up front; every other failure maps to its store error.
+// buyItem exchanges coins for one or more units of an item — the body may
+// name how many (`{"count": N}`, default 1, capped at maxItemCount), the
+// batch debits price×count at once. Guests are refused up front; every other
+// failure maps to its store error.
 func (a *API) buyItem(w http.ResponseWriter, r *http.Request) {
 	p, _ := playerOf(r)
 	if p.IsGuest {
@@ -88,7 +90,12 @@ func (a *API) buyItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := a.Store.BuyItem(p.ID, id); err != nil {
+	count, valid, err := itemCount(r)
+	if !valid {
+		fail(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.Store.BuyItem(p.ID, id, count); err != nil {
 		a.itemError(w, err)
 		return
 	}
@@ -98,13 +105,33 @@ func (a *API) buyItem(w http.ResponseWriter, r *http.Request) {
 	}
 	// coins and the inventory changed behind the player's other tabs
 	a.notifyPlayer(fresh)
-	ok(w, map[string]any{"player": a.toPlayerJSON(fresh)})
+	ok(w, map[string]any{"player": a.toPlayerJSON(fresh), "count": count})
+}
+
+// itemCount reads the optional `{"count": N}` unit count shared by the buy
+// and use endpoints: absent → 1; anything non-integral or outside
+// 1..maxItemCount → ok=false with the client-facing message.
+func itemCount(r *http.Request) (int, bool, error) {
+	var body struct {
+		Count *float64 `json:"count"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+		return 0, false, errors.New("invalid body")
+	}
+	if body.Count == nil {
+		return 1, true, nil
+	}
+	n := *body.Count
+	if n != math.Trunc(n) || n < 1 || n > maxItemCount {
+		return 0, false, fmt.Errorf("count must be an integer between 1 and %d", maxItemCount)
+	}
+	return int(n), true, nil
 }
 
 // useItem consumes units from the inventory and arms the item's personal
 // boost window; the fresh player JSON carries both the new stock and the
 // stacked boost view. The body may name how many units to spend at once —
-// `{"count": N}` (default 1, capped at maxUseCount); every unit adds its own
+// `{"count": N}` (default 1, capped at maxItemCount); every unit adds its own
 // duration to the window, trimmed at the 24h cap. `action` tells what
 // happened to the kind's window — "fresh", "extended" (same multiplier
 // stacked time) or "replaced" (a different multiplier took over) — `replaced`
@@ -116,21 +143,10 @@ func (a *API) useItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	count := 1
-	var body struct {
-		Count *float64 `json:"count"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-		fail(w, http.StatusBadRequest, "invalid body")
+	count, valid, err := itemCount(r)
+	if !valid {
+		fail(w, http.StatusBadRequest, err.Error())
 		return
-	}
-	if body.Count != nil {
-		n := *body.Count
-		if n != math.Trunc(n) || n < 1 || n > maxUseCount {
-			fail(w, http.StatusBadRequest, fmt.Sprintf("count must be an integer between 1 and %d", maxUseCount))
-			return
-		}
-		count = int(n)
 	}
 	boost, action, capped, err := a.Store.UseItem(p.ID, id, count)
 	if err != nil {
@@ -161,6 +177,8 @@ func (a *API) itemError(w http.ResponseWriter, err error) {
 		fail(w, http.StatusBadRequest, "insufficient coins")
 	case errors.Is(err, store.ErrNoItems):
 		fail(w, http.StatusBadRequest, "no items left in inventory")
+	case errors.Is(err, store.ErrInvalidCount):
+		fail(w, http.StatusBadRequest, "invalid count")
 	case errors.Is(err, store.ErrBoostDurationCap):
 		fail(w, http.StatusBadRequest, "boost duration cap exceeded (24h)")
 	case errors.Is(err, store.ErrNotFound):

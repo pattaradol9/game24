@@ -111,7 +111,7 @@ func TestPlayerJSONBoostsStackAdditively(t *testing.T) {
 	if _, _, err := api.Store.AwardEXP(id, "queen", 5000, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := api.Store.BuyItem(id, "exp2"); err != nil {
+	if err := api.Store.BuyItem(id, "exp2", 1); err != nil {
 		t.Fatal(err)
 	}
 	if _, action, _, err := api.Store.UseItem(id, "exp2", 1); err != nil || action != "fresh" {
@@ -144,7 +144,7 @@ func TestUseItemCountValidationAndMultiUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 6; i++ {
-		if err := api.Store.BuyItem(id, "exp2"); err != nil {
+		if err := api.Store.BuyItem(id, "exp2", 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -178,5 +178,45 @@ func TestUseItemCountValidationAndMultiUse(t *testing.T) {
 	// asking for more than the bag holds spends nothing
 	if code, _ = post(t, mux, "/api/v1/items/exp2/use", map[string]any{"count": 99}, token); code != 400 {
 		t.Fatalf("use 99 of 2 = %d, want 400", code)
+	}
+}
+
+func TestBuyItemCountBatch(t *testing.T) {
+	api, mux := newTestAPI(t)
+	token := googlePlayerToken(t, api, "buycountapi")
+	id := playerID(t, api, token)
+	// 30000 points → 3000 coins
+	if _, _, err := api.Store.AwardEXP(id, "queen", 30000, true); err != nil {
+		t.Fatal(err)
+	}
+	// broken counts are refused before any coin moves
+	for _, n := range []any{0, -1, 2.5, 201, "3"} {
+		code, _ := post(t, mux, "/api/v1/items/exp2/buy", map[string]any{"count": n}, token)
+		if code != 400 {
+			t.Fatalf("count %v = %d, want 400", n, code)
+		}
+	}
+	// a 4-unit batch costs 4×400 and stacks 4
+	code, res := post(t, mux, "/api/v1/items/exp2/buy", map[string]any{"count": 4}, token)
+	if code != 200 {
+		t.Fatalf("batch buy: %d %v", code, res)
+	}
+	if n := data(res)["count"].(float64); n != 4 {
+		t.Fatalf("response count = %v, want 4", n)
+	}
+	player := data(res)["player"].(map[string]any)
+	if player["totalCoins"].(float64) != 1400 {
+		t.Fatalf("totalCoins = %v, want 1400 (3000 − 4×400)", player["totalCoins"])
+	}
+	stacks, err := api.Store.PlayerItems(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stacks) != 1 || stacks[0].Qty != 4 {
+		t.Fatalf("inventory = %+v, want one exp2 stack of 4", stacks)
+	}
+	// a second full batch (1600 > 1400) is refused whole
+	if code, _ = post(t, mux, "/api/v1/items/exp2/buy", map[string]any{"count": 4}, token); code != 400 {
+		t.Fatalf("batch over balance = %d, want 400", code)
 	}
 }

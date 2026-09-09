@@ -13,8 +13,11 @@ import (
 	"github.com/pattaradol9/game24/server/internal/items"
 )
 
-// ErrNoItems marks using an item the player has none of.
+// ErrNoItems marks using an item the player has none (or not enough) of.
 var ErrNoItems = errors.New("store: no items in inventory")
+
+// ErrInvalidCount marks a buy/use whose unit count is below one.
+var ErrInvalidCount = errors.New("store: invalid item count")
 
 // ErrBoostDurationCap marks a use that would add no time at all because the
 // kind's window already runs to the 24-hour cap; nothing is consumed. Uses
@@ -50,13 +53,19 @@ func (s *Store) PlayerItems(playerID string) ([]PlayerItem, error) {
 	return out, rows.Err()
 }
 
-// BuyItem exchanges coins for one more unit of an item. Google-signed-in
-// players only; the debit and the inventory upsert share one transaction.
-func (s *Store) BuyItem(playerID, itemID string) error {
+// BuyItem exchanges coins for `count` more units of an item — the whole
+// batch debits price×count and upserts the stack in one transaction, so a
+// player either affords every unit or spends nothing. Google-signed-in
+// players only.
+func (s *Store) BuyItem(playerID, itemID string, count int) error {
 	def, ok := items.ByID(itemID)
 	if !ok || def.Price <= 0 {
 		return ErrNotFound
 	}
+	if count < 1 {
+		return ErrInvalidCount
+	}
+	cost := def.Price * int64(count)
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
@@ -74,20 +83,20 @@ func (s *Store) BuyItem(playerID, itemID string) error {
 	if guest {
 		return ErrGoogleRequired
 	}
-	if coins < def.Price {
+	if coins < cost {
 		return ErrInsufficientCoins
 	}
-	if _, err := tx.Exec(`INSERT INTO player_items (player_id, item_id, qty) VALUES (?,?,1)
-		ON CONFLICT(player_id, item_id) DO UPDATE SET qty = qty + 1`, playerID, itemID); err != nil {
+	if _, err := tx.Exec(`INSERT INTO player_items (player_id, item_id, qty) VALUES (?,?,?)
+		ON CONFLICT(player_id, item_id) DO UPDATE SET qty = qty + ?`, playerID, itemID, count, count); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE players SET total_coins = total_coins - ? WHERE id = ?`, def.Price, playerID); err != nil {
+	if _, err := tx.Exec(`UPDATE players SET total_coins = total_coins - ? WHERE id = ?`, cost, playerID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	s.LogEvent("player:"+playerID, "item.buy", itemID, mustJSON(map[string]any{"price": def.Price}))
+	s.LogEvent("player:"+playerID, "item.buy", itemID, mustJSON(map[string]any{"price": def.Price, "count": count, "cost": cost}))
 	return nil
 }
 
@@ -114,7 +123,7 @@ func (s *Store) UseItem(playerID, itemID string, count int) (ActiveBoost, string
 		return ActiveBoost{}, "", false, ErrNotFound
 	}
 	if count < 1 {
-		return ActiveBoost{}, "", false, ErrNoItems
+		return ActiveBoost{}, "", false, ErrInvalidCount
 	}
 	kind := BoostKind(def.Kind)
 	duration := time.Duration(def.DurationMin) * time.Minute

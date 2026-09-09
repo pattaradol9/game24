@@ -25,6 +25,10 @@ const active = ref({}) // item id → endsAt RFC3339 while its window runs
 const busyId = ref('')
 const actionError = ref('')
 const confirming = ref(null)
+const count = ref(1) // units the slider commits to buying
+const maxBuy = ref(1) // most units the balance (and the server bound) allow
+
+const MAX_BUY = 200 // mirrors the server's maxItemCount bound
 
 const player = computed(() => currentPlayer.value)
 const signedIn = computed(() => !!player.value && !player.value.isGuest)
@@ -68,13 +72,14 @@ watch(
 
 async function buy(it) {
   if (busyId.value) return
+  const n = Math.min(count.value, maxBuy.value)
   busyId.value = it.id
   actionError.value = ''
   try {
     const from = player.value?.totalCoins ?? 0
-    const data = await api.buyItem(it.id, getToken())
+    const data = await api.buyItem(it.id, getToken(), n)
     updatePlayer(data.player)
-    owned.value = { ...owned.value, [it.id]: qtyOf(it.id) + 1 }
+    owned.value = { ...owned.value, [it.id]: qtyOf(it.id) + n }
     confirming.value = null
     const to = data.player?.totalCoins ?? from
     if (from !== to) emit('spent', from, to)
@@ -87,6 +92,9 @@ async function buy(it) {
 
 function askBuy(it) {
   actionError.value = ''
+  // the slider maxes at what the balance affords — every unit costs its price
+  maxBuy.value = Math.max(0, Math.min(MAX_BUY, Math.floor(balance.value / it.price)))
+  count.value = 1
   confirming.value = it
 }
 function closeConfirm() {
@@ -174,23 +182,33 @@ defineExpose({ reload: load })
             <span class="mult num">×{{ confirming.multiplier }} · {{ fmtDuration(confirming.durationMinutes * 60) }}</span>
             <span class="price-row">
               <Icon name="coin" :size="22" />
-              <b class="num">{{ fmt(confirming.price) }}</b>
+              <b class="num">{{ fmt(confirming.price * count) }}</b>
+              <span v-if="count > 1" class="unit num">×{{ count }}</span>
             </span>
           </div>
         </div>
         <p class="note">{{ t('useItemNote') }}</p>
+        <!-- how many units to buy: maxed by what the balance affords -->
+        <div v-if="maxBuy > 1" class="countrow">
+          <div class="counthead">
+            <label for="buy-count">{{ t('buyCount') }}</label>
+            <b class="countval num">×{{ count }}</b>
+          </div>
+          <input id="buy-count" v-model.number="count" type="range" min="1" :max="maxBuy" />
+          <span class="counthint">{{ t('itemMaxBuyable', { n: fmt(maxBuy) }) }}</span>
+        </div>
         <div class="after">
           <span>{{ t('balanceAfter') }}</span>
           <span class="after-val num">
             {{ fmt(balance) }} <Icon class="arrow" name="arrow-right" :size="14" />
-            <b :class="{ zero: balance - confirming.price === 0 }">{{ fmt(balance - confirming.price) }}</b>
+            <b :class="{ zero: balance - confirming.price * count === 0 }">{{ fmt(balance - confirming.price * count) }}</b>
           </span>
         </div>
         <p v-if="actionError" class="err">{{ actionError }}</p>
         <div class="confirm-actions">
           <button class="btn" :disabled="busyId === confirming.id" @click="closeConfirm">{{ t('cancel') }}</button>
           <button class="btn buy-btn confirm-buy" :disabled="busyId === confirming.id" @click="buy(confirming)">
-            <Icon name="coin" :size="20" />{{ t('buy') }}
+            <Icon name="coin" :size="20" />{{ t('itemBuyN', { n: count }) }}
           </button>
         </div>
       </div>
@@ -443,6 +461,19 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
   color: var(--accent);
   margin-top: 2px;
 }
+.price-row .unit { font-size: 0.8rem; font-weight: 600; color: var(--text-dim); }
+/* units-to-buy slider, maxed by the balance */
+.countrow { display: flex; flex-direction: column; gap: 7px; }
+.counthead { display: flex; align-items: baseline; justify-content: space-between; }
+.counthead label {
+  font-size: 0.7rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-mute);
+}
+.countval { font-size: 1.1rem; color: var(--accent); }
+input[type='range'] { width: 100%; accent-color: var(--accent); }
+.counthint { font-size: 0.7rem; color: var(--text-mute); }
 .note {
   font-size: 0.78rem;
   color: var(--text-mute);

@@ -18,13 +18,13 @@ func TestBuyItemGatesAndStacks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.BuyItem(g.ID, "exp2"); !errors.Is(err, ErrGoogleRequired) {
+	if err := s.BuyItem(g.ID, "exp2", 1); !errors.Is(err, ErrGoogleRequired) {
 		t.Fatalf("guest buy = %v, want ErrGoogleRequired", err)
 	}
 	if _, _, _, err := s.UseItem(g.ID, "exp2", 1); !errors.Is(err, ErrGoogleRequired) {
 		t.Fatalf("guest use = %v, want ErrGoogleRequired", err)
 	}
-	if err := s.BuyItem(g.ID, "nope"); !errors.Is(err, ErrNotFound) {
+	if err := s.BuyItem(g.ID, "nope", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown item = %v, want ErrNotFound", err)
 	}
 
@@ -36,7 +36,7 @@ func TestBuyItemGatesAndStacks(t *testing.T) {
 	}
 	bought := 0
 	for {
-		err := s.BuyItem(id, "coin2")
+		err := s.BuyItem(id, "coin2", 1)
 		if errors.Is(err, ErrInsufficientCoins) {
 			break
 		}
@@ -66,13 +66,13 @@ func TestUseItemConsumesStockAndArmsWindow(t *testing.T) {
 	if _, _, _, err := s.UseItem(id, "exp2", 1); !errors.Is(err, ErrNoItems) {
 		t.Fatalf("use with empty bag = %v, want ErrNoItems", err)
 	}
-	if err := s.BuyItem(id, "exp2"); !errors.Is(err, ErrInsufficientCoins) {
+	if err := s.BuyItem(id, "exp2", 1); !errors.Is(err, ErrInsufficientCoins) {
 		t.Fatalf("buy without coins = %v, want ErrInsufficientCoins", err)
 	}
 	if _, _, err := s.AwardEXP(id, "queen", 5000, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.BuyItem(id, "exp2"); err != nil {
+	if err := s.BuyItem(id, "exp2", 1); err != nil {
 		t.Fatal(err)
 	}
 	boost, action, _, err := s.UseItem(id, "exp2", 1)
@@ -111,7 +111,7 @@ func TestSameKindUseReplacesRunningWindow(t *testing.T) {
 		}
 	}
 	for _, idem := range []string{"exp2", "exp5"} {
-		if err := s.BuyItem(id, idem); err != nil {
+		if err := s.BuyItem(id, idem, 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -141,7 +141,7 @@ func TestSameKindUseReplacesRunningWindow(t *testing.T) {
 		t.Fatalf("swap end = %v, want ≈ 30min from the swap (<= %v)", second.EndsAt, wantHi)
 	}
 	// popping the same ×5 again stacks time onto the live window instead
-	if err := s.BuyItem(id, "exp5"); err != nil {
+	if err := s.BuyItem(id, "exp5", 1); err != nil {
 		t.Fatal(err)
 	}
 	if _, action, _, err := s.UseItem(id, "exp5", 1); err != nil || action != "extended" {
@@ -159,7 +159,7 @@ func TestSameMultiplierStacksDuration(t *testing.T) {
 	}
 	// a ×2/30min and a ×2/60min feed the same window: 30 + 60 = 90min of ×2
 	for _, idem := range []string{"exp2", "exp2h"} {
-		if err := s.BuyItem(id, idem); err != nil {
+		if err := s.BuyItem(id, idem, 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -199,7 +199,7 @@ func TestDurationCapBoundaryAndRefusal(t *testing.T) {
 		}
 	}
 	for _, idem := range []string{"exp2", "exp2h", "exp2"} {
-		if err := s.BuyItem(id, idem); err != nil {
+		if err := s.BuyItem(id, idem, 1); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -248,13 +248,13 @@ func TestUseItemCountSpendsStacksAndClamps(t *testing.T) {
 		}
 	}
 	for i := 0; i < 30; i++ {
-		if err := s.BuyItem(id, "exp2"); err != nil {
+		if err := s.BuyItem(id, "exp2", 1); err != nil {
 			t.Fatal(err)
 		}
 	}
 	// zero and more-than-the-bag asks are refused with nothing consumed
-	if _, _, _, err := s.UseItem(id, "exp2", 0); !errors.Is(err, ErrNoItems) {
-		t.Fatalf("count 0 = %v, want ErrNoItems", err)
+	if _, _, _, err := s.UseItem(id, "exp2", 0); !errors.Is(err, ErrInvalidCount) {
+		t.Fatalf("count 0 = %v, want ErrInvalidCount", err)
 	}
 	if _, _, _, err := s.UseItem(id, "exp2", 99); !errors.Is(err, ErrNoItems) {
 		t.Fatalf("use 99 of 30 = %v, want ErrNoItems", err)
@@ -291,6 +291,48 @@ func TestUseItemCountSpendsStacksAndClamps(t *testing.T) {
 	}
 }
 
+func TestBuyItemCountDebitsBatchAndStacks(t *testing.T) {
+	s := openTest(t)
+	id, _ := googlePlayer(t, s, "buycount")
+	// 20000 points → 2000 coins
+	if _, _, err := s.AwardEXP(id, "queen", 20000, true); err != nil {
+		t.Fatal(err)
+	}
+	// a zero count is refused outright
+	if err := s.BuyItem(id, "exp2", 0); !errors.Is(err, ErrInvalidCount) {
+		t.Fatalf("count 0 = %v, want ErrInvalidCount", err)
+	}
+	// a 3-unit batch debits 3× the unit price and stacks 3
+	if err := s.BuyItem(id, "exp2", 3); err != nil {
+		t.Fatal(err)
+	}
+	var coins int64
+	if err := s.db.QueryRow(`SELECT total_coins FROM players WHERE id = ?`, id).Scan(&coins); err != nil {
+		t.Fatal(err)
+	}
+	if want := int64(2000 - 3*400); coins != want {
+		t.Fatalf("coins after batch = %d, want %d", coins, want)
+	}
+	items, err := s.PlayerItems(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != "exp2" || items[0].Qty != 3 {
+		t.Fatalf("inventory = %+v, want one exp2 stack of 3", items)
+	}
+	// a batch the balance cannot cover is refused whole — nothing debited,
+	// nothing stacked
+	if err := s.BuyItem(id, "exp2", 4); !errors.Is(err, ErrInsufficientCoins) {
+		t.Fatalf("batch over balance = %v, want ErrInsufficientCoins", err)
+	}
+	if err := s.db.QueryRow(`SELECT total_coins FROM players WHERE id = ?`, id).Scan(&coins); err != nil {
+		t.Fatal(err)
+	}
+	if coins != int64(800) {
+		t.Fatalf("coins after refused batch = %d, want the untouched 800", coins)
+	}
+}
+
 func TestPersonalBoostStacksAdditivelyWithServerBoost(t *testing.T) {
 	s := openTest(t)
 	id, _ := googlePlayer(t, s, "stackitem")
@@ -312,7 +354,7 @@ func TestPersonalBoostStacksAdditivelyWithServerBoost(t *testing.T) {
 	if _, _, err := s.AwardEXP(id, "queen", 9000, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.BuyItem(id, "exp2"); err != nil {
+	if err := s.BuyItem(id, "exp2", 1); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := s.UseItem(id, "exp2", 1); err != nil {
@@ -334,7 +376,7 @@ func TestPersonalBoostStacksAdditivelyWithServerBoost(t *testing.T) {
 
 	// a personal ×5 coin item stacks with the server ×2: ×6 total, never the
 	// compounded ×12
-	if err := s.BuyItem(id, "coin5"); err != nil {
+	if err := s.BuyItem(id, "coin5", 1); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := s.UseItem(id, "coin5", 1); err != nil {
@@ -355,7 +397,7 @@ func TestExpiredPersonalBoostStopsPaying(t *testing.T) {
 	if _, _, err := s.AwardEXP(id, "queen", 9000, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.BuyItem(id, "exp2"); err != nil {
+	if err := s.BuyItem(id, "exp2", 1); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := s.UseItem(id, "exp2", 1); err != nil {
