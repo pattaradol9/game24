@@ -33,7 +33,7 @@ async function confirmDelete() {
 </script>
 
 <template>
-  <div class="overlay" @click.self="$emit('close')">
+  <div class="overlay">
     <div class="panel">
       <span class="hero-ic"><Icon name="trash" :size="24" /></span>
       <h3>{{ t('deleteTitle') }}</h3>

@@ -160,7 +160,7 @@ onUnmounted(() => {
 }
 /* pedigree colours: reserved server teal, then the rarity ladder */
 .c-server { --cc: #29d3be; }
-.c-common { --cc: var(--text-dim); }
+.c-common { --cc: var(--rarity-common); }
 .c-rare { --cc: var(--info); }
 .c-epic { --cc: #b283f0; }
 .c-legend { --cc: var(--accent); }

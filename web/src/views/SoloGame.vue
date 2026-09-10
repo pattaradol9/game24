@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from '../i18n/index.js'
 import { useGame } from '../composables/useGame.js'
 import { sfx } from '../audio.js'
@@ -8,6 +8,8 @@ import { shake, popText, danger, haptic, centerOf } from '../fx.js'
 import GameBoard from '../components/GameBoard.vue'
 import StepHistory from '../components/StepHistory.vue'
 import ResultModal from '../components/ResultModal.vue'
+import TimeExtendModal from '../components/TimeExtendModal.vue'
+import ConfirmModal from '../components/ConfirmModal.vue'
 import CelebrationPopup from '../components/CelebrationPopup.vue'
 import Countdown from '../components/Countdown.vue'
 import StreakFlame from '../components/StreakFlame.vue'
@@ -20,8 +22,9 @@ import BuffBar from '../components/BuffBar.vue'
 
 const { t, lang } = useI18n()
 const route = useRoute()
+const router = useRouter()
 const game = useGame()
-const { phase, mode, hand, remaining, timeLimit, hintLeft, hintCard, result, busy, paused, combo } = game
+const { phase, mode, hand, remaining, timeLimit, hintLeft, hintCard, result, busy, paused, combo, extendOffer, extendBusy, extendUsed, skipUsed, addTime, sessionScore, sessionExp, sessionCoins, restored } = game
 
 const player = currentPlayer
 const toast = ref('')
@@ -72,6 +75,124 @@ const showCountdown = ref(false)
 const dealing = ref(false)
 const streak = computed(() => player.value?.perMode?.[mode.value]?.currentStreak ?? 0)
 
+// Time Extension stock for the "time over?" dialog — the player JSON's
+// inventory rides along every profile fetch
+const bagTimeItems = computed(() =>
+  (player.value?.items ?? []).find((i) => i.id === 'time30')?.qty ?? 0
+)
+
+// leaving mid-game ends the run: confirm first, then show the summary dialog
+// before actually exiting — the open hand is forfeit either way (it can never
+// pay: the server only banks verified submits inside the hand's own window)
+const exitConfirm = ref(false)
+const sessionEnd = ref(false)
+function onExit() {
+  if (phase.value === 'playing' && !sessionEnd.value) {
+    exitConfirm.value = true
+    return
+  }
+  router.push('/')
+}
+function confirmExit() {
+  exitConfirm.value = false
+  game.stop() // freeze the clock, drop the stored session; in-flight responses are ignored
+  sessionEnd.value = true
+}
+function onNext() {
+  if (sessionEnd.value) {
+    router.push('/')
+    return
+  }
+  // a game-over reset happens inside the composable's next()
+  game.next()
+}
+
+// Skip Pass stock: the Skip button folds one hand per play session and costs
+// one unit, so guests and empty bags see the button go dark
+const bagSkipItems = computed(() =>
+  (player.value?.items ?? []).find((i) => i.id === 'skip1')?.qty ?? 0
+)
+const canSkip = computed(() =>
+  phase.value === 'playing' && !paused.value && !extendOffer.value && !busy.value &&
+  !skipUsed.value && bagSkipItems.value > 0 && !player.value?.isGuest
+)
+
+// the dialog's verdict: true spends one unit and resumes with +30s (a toast
+// confirms it), false lets the hand go
+async function onExtendResolve(use) {
+  const added = await game.resolveExtend(use)
+  if (added) say(t('timeExtendToast', { n: added }), 2400)
+}
+
+// the Add-time button (undo's old slot): spends one Time Extension any time
+// mid-play, but only while the clock still has room under the mode's limit —
+// one press per session, like the zero-time bailout dialog
+const canExtend = computed(() =>
+  phase.value === 'playing' && !paused.value && !extendOffer.value && !extendBusy.value &&
+  !extendUsed.value && bagTimeItems.value > 0 && !player.value?.isGuest &&
+  remaining.value < timeLimit.value
+)
+const extendHint = computed(() => {
+  if (player.value?.isGuest || bagTimeItems.value <= 0) return t('timeNeedsItem')
+  if (extendUsed.value) return t('timeExtendOnce')
+  if (remaining.value >= timeLimit.value) return t('timeFullLimit')
+  return ''
+})
+async function onAddTime() {
+  const added = await game.addTime()
+  if (added) say(t('timeExtendToast', { n: added }), 2400)
+}
+
+// a dark helper explains itself where it stands: pressing it pops a bubble
+// over the button naming the reason — no item in the bag, this visit's quota
+// already spent, or the clock already full. Disabled buttons swallow clicks,
+// so a transparent gate lies over the dark button to catch the press.
+const refused = ref('') // which helper is talking: hint | extend | skip
+const refuseMsg = ref('')
+let refuseTimer = 0
+function refuse(which, msg, ev) {
+  refused.value = which
+  refuseMsg.value = msg
+  clearTimeout(refuseTimer)
+  refuseTimer = later(() => (refused.value = ''), 2600)
+  flourish(ev?.currentTarget)
+}
+
+// the popup's three.js flourish: a short golden spark burst from the bubble.
+// The module is code-split and boots its one shared canvas on the first press
+// only (GameBackdrop discipline); reduced motion never boots it at all.
+function flourish(el) {
+  const r = el?.getBoundingClientRect?.()
+  if (!r) return
+  import('../three/popupFx.js')
+    .then((m) => m.glint(r.left + r.width / 2, r.top))
+    .catch(() => {})
+}
+
+// the Solution button is dark with a reason only when the hint quota is gone
+const hintSpent = computed(() =>
+  phase.value === 'playing' && !paused.value && !extendOffer.value && (hintLeft.value ?? 0) <= 0
+)
+// extendHint already names the extend reasons (no item / session used / clock full)
+const extendSpent = computed(() =>
+  phase.value === 'playing' && !paused.value && !extendOffer.value && !extendBusy.value && !!extendHint.value
+)
+// the same two reasons Skip can be dark for
+const skipHint = computed(() => {
+  if (player.value?.isGuest || bagSkipItems.value <= 0) return t('skipNeedsItem')
+  if (skipUsed.value) return t('skipSpent')
+  return ''
+})
+const skipSpent = computed(() =>
+  phase.value === 'playing' && !paused.value && !extendOffer.value && !busy.value && !!skipHint.value
+)
+
+// Undo lives in the Steps panel now — active only while there is a step back
+const canUndo = computed(() =>
+  phase.value === 'playing' && !paused.value && !extendOffer.value &&
+  (hand.value?.history?.length ?? 0) > 0
+)
+
 const timePct = computed(() =>
   timeLimit.value > 0 ? Math.max(0, Math.min(100, (remaining.value / timeLimit.value) * 100)) : 0
 )
@@ -90,6 +211,7 @@ onUnmounted(() => {
   danger(0)
   clearTimeout(toastId)
   timers.forEach(clearTimeout)
+  import('../three/popupFx.js').then((m) => m.disposeGlint()).catch(() => {})
 })
 
 watch(phase, (p) => {
@@ -101,6 +223,11 @@ watch(phase, (p) => {
 })
 
 function beginRound() {
+  // a refresh-restored hand resumes silently — no countdown, no deal fanfare
+  if (restored.value) {
+    restored.value = false
+    return
+  }
   showCountdown.value = true
   dealing.value = true
   for (let i = 0; i < 4; i++) sfx.deal(i)
@@ -142,7 +269,7 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
 <template>
   <main class="wrap solo">
     <header class="top">
-      <button class="btn back" @click="$router.push('/')">
+      <button class="btn back" @click="onExit">
         <Icon name="back" :size="18" /><span class="back-label">{{ t('exit') }}</span>
       </button>
       <ModeBadge :mode="mode" />
@@ -163,7 +290,7 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
         <GameBoard
           v-if="phase === 'playing' && hand"
           :hand="hand"
-          :disabled="paused"
+          :disabled="paused || !!extendOffer"
           :hint-data="hintCard"
           :dealing="dealing"
           :skin="player?.skin"
@@ -173,21 +300,59 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
         <div v-else class="loading">{{ phase === 'loading' ? '…' : '' }}</div>
 
         <div class="actions">
-          <button class="btn" :disabled="phase !== 'playing' || paused || (hintLeft ?? 0) <= 0" @click="game.hint">
-            <Icon name="bulb" :size="17" />{{ t('hint') }}
-            <b v-if="(hintLeft ?? 0) > 0" class="count num">{{ hintLeft }}</b>
-          </button>
-          <button class="btn" :disabled="phase !== 'playing' || paused" @click="game.undo">
-            <Icon name="undo" :size="17" />{{ t('undo') }}
-          </button>
-          <button class="btn danger" :disabled="phase !== 'playing' || paused || busy" @click="game.skip">
-            <Icon name="skip" :size="17" />{{ t('skip') }}
-          </button>
+          <div class="helper">
+            <button class="btn" :disabled="phase !== 'playing' || paused || !!extendOffer || (hintLeft ?? 0) <= 0" @click="game.hint">
+              <Icon name="bulb" :size="17" />{{ t('solution') }}
+            </button>
+            <span v-if="hintSpent" class="gate" :title="t('hintsSpent')" @click="refuse('hint', t('hintsSpent'), $event)" />
+            <Transition name="whypop">
+              <span v-if="refused === 'hint'" class="why" role="status">{{ refuseMsg }}</span>
+            </Transition>
+          </div>
+          <div class="helper">
+            <button
+              class="btn"
+              :disabled="!canExtend"
+              :title="extendHint"
+              data-test="add-time"
+              @click="onAddTime"
+            >
+              <Icon name="hourglass" :size="17" />{{ t('addTime') }}
+            </button>
+            <span v-if="extendSpent" class="gate" :title="extendHint" @click="refuse('extend', extendHint, $event)" />
+            <Transition name="whypop">
+              <span v-if="refused === 'extend'" class="why" role="status">{{ refuseMsg }}</span>
+            </Transition>
+          </div>
+          <div class="helper">
+            <button
+              class="btn danger"
+              :disabled="!canSkip"
+              :title="canSkip ? '' : skipHint"
+              data-test="skip-hand"
+              @click="game.skip"
+            >
+              <Icon name="skip" :size="17" />{{ t('skip') }}
+            </button>
+            <span v-if="skipSpent" class="gate" :title="skipHint" @click="refuse('skip', skipHint, $event)" />
+            <Transition name="whypop">
+              <span v-if="refused === 'skip'" class="why" role="status">{{ refuseMsg }}</span>
+            </Transition>
+          </div>
         </div>
       </div>
 
       <aside class="side">
-        <StepHistory :history="hand?.history ?? []" />
+        <div class="panel score-panel" data-test="session-score">
+          <h3 class="section-title">{{ t('score') }}</h3>
+          <p class="score num">{{ sessionScore }}</p>
+          <!-- what the run has banked so far, mirroring the game-over summary -->
+          <div v-if="player && !player.isGuest && (sessionExp > 0 || sessionCoins > 0)" class="payouts">
+            <span v-if="sessionExp > 0" class="payout num">+{{ sessionExp }} EXP</span>
+            <span v-if="sessionCoins > 0" class="payout num"><Icon name="coin" :size="13" />{{ sessionCoins }}</span>
+          </div>
+        </div>
+        <StepHistory :history="hand?.history ?? []" :can-undo="canUndo" @undo="game.undo" />
         <div v-if="player && !player.isGuest" class="panel xp-panel">
           <XpBar
             :exp="player.totalExp"
@@ -204,7 +369,32 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
     </Transition>
 
     <Countdown v-if="showCountdown" @done="onCountdownDone" />
-    <ResultModal :show="phase === 'result'" v-bind="result ?? {}" @next="game.next" />
+    <TimeExtendModal
+      :show="!!extendOffer"
+      :qty="bagTimeItems"
+      :busy="extendBusy"
+      @resolve="onExtendResolve"
+    />
+    <ResultModal
+      :show="phase === 'result' || sessionEnd"
+      v-bind="result ?? {}"
+      :player="result?.player ?? player"
+      :session-score="sessionScore"
+      :session-exp="sessionExp"
+      :session-coins="sessionCoins"
+      :session-end="sessionEnd"
+      @next="onNext"
+    />
+    <ConfirmModal
+      :show="exitConfirm"
+      :title="t('exitConfirmTitle')"
+      :body="t('exitConfirmBody')"
+      :ok-label="t('endGame')"
+      :cancel-label="t('cancel')"
+      danger
+      @confirm="confirmExit"
+      @cancel="exitConfirm = false"
+    />
     <CelebrationPopup
       :show="!!(result && (result.levelUp || result.tierUp))"
       :kind="result?.tierUp ? 'tier' : 'level'"
@@ -280,18 +470,49 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
   gap: 10px;
   margin-top: 16px;
 }
-.count {
-  background: var(--accent);
-  color: var(--accent-ink);
-  border-radius: var(--r-full);
-  min-width: 19px;
-  height: 19px;
-  display: inline-grid;
-  place-items: center;
-  font-size: 0.68rem;
-  font-weight: 700;
-  padding: 0 5px;
+/* each helper owns its reason bubble: a transparent gate lies over the dark
+   button so a press is catchable (a disabled button swallows clicks) */
+.helper { position: relative; display: flex; }
+.helper .btn { flex: 1 1 auto; }
+.gate { position: absolute; inset: 0; z-index: 2; cursor: not-allowed; -webkit-tap-highlight-color: transparent; }
+.why {
+  position: absolute;
+  bottom: calc(100% + 9px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  width: max-content;
+  max-width: 240px;
+  padding: 9px 13px;
+  border-radius: var(--r-sm);
+  background: var(--surface-3);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-3);
+  color: var(--text);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  text-align: center;
+  pointer-events: none;
 }
+.why::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: var(--line);
+}
+/* the bubble's centering transform must survive the whole run: a bare
+   rise-in animates transform too and would strip translateX(-50%), so the
+   keyframes restate it — otherwise the bubble jumps sideways mid-pop */
+@keyframes why-pop {
+  from { opacity: 0; transform: translateX(-50%) translateY(9px) scale(0.88); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+}
+.whypop-enter-active { animation: why-pop 0.26s var(--ease-out-back); transform-origin: bottom center; }
+.whypop-leave-active { transition: opacity 0.16s var(--ease), transform 0.16s var(--ease); }
+.whypop-leave-to { opacity: 0; transform: translateX(-50%) translateY(4px) scale(0.96); }
 .side {
   grid-area: side;
   align-self: stretch;
@@ -302,6 +523,11 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
 }
 .side :deep(.history) { flex: 1 1 auto; }
 .xp-panel { flex: none; padding: 14px 16px; }
+/* session score tally, fed by every solved hand */
+.score-panel { flex: none; padding: 13px 16px; display: flex; flex-direction: column; gap: 6px; }
+.score { font-size: 1.55rem; font-weight: 700; line-height: 1; color: var(--text); }
+.payouts { display: flex; flex-wrap: wrap; gap: 3px 14px; }
+.payout { display: inline-flex; align-items: center; gap: 5px; font-size: 0.82rem; font-weight: 600; color: var(--text-dim); }
 .loading { text-align: center; color: var(--text-mute); font-size: 1.4rem; padding: 60px 0; }
 
 /* ---------- toast ---------- */

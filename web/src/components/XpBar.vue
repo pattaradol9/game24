@@ -27,7 +27,7 @@ watch(() => props.level, (nv, ov) => {
   <div class="xp" :class="{ compact, instant }">
     <div class="row">
       <span class="lv">Lv.{{ level }}</span>
-      <span v-if="!compact" class="count num">{{ into }} / {{ forNext }} EXP</span>
+      <span v-if="!compact" class="count num">{{ forNext > 0 ? `${into} / ${forNext} EXP` : 'MAX' }}</span>
     </div>
     <span class="track">
       <span class="fill" :class="{ blink: leveled }" :style="{ width: pct + '%' }" />

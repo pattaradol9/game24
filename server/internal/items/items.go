@@ -15,22 +15,30 @@ type Text struct {
 	Th string `json:"th"`
 }
 
-// Def is one consumable item in the catalog. Kind selects which payout the
-// item boosts ("exp" or "coins"); Multiplier is the personal bonus the item
-// grants while its window runs; DurationMin is how long one activation
-// lasts. Activating an item always starts a fresh window and overwrites any
-// live window of the same kind — same-kind boosts replace, never combine.
-// Rarity tiers the item by power/price and drives the card styling the same
-// way card-skin rarities do (common < rare < epic < legend).
+// Def is one consumable item in the catalog. Kind selects what the item
+// does: "exp" and "coins" arm a personal payout boost — Multiplier is the
+// personal bonus while its window runs and DurationMin is how long one
+// activation lasts; activating an item always starts a fresh window and
+// overwrites any live window of the same kind (same-kind boosts replace,
+// never combine). Kind "time" is a play helper instead: it never arms a
+// window, its ExtraSeconds are what one unit adds to a solo hand's countdown
+// when time runs out, and the store spends it through the round-extend path
+// rather than the boost-window path. Kind "skip" is the other play helper:
+// one unit lets the player bail out of the current solo hand through the
+// Skip button, once per play session (the store spends it through the
+// round-skip path). Rarity tiers the item by power/price
+// and drives the card styling the same way card-skin rarities do
+// (common < rare < epic < legend).
 type Def struct {
-	ID          string  `json:"id"`
-	Name        Text    `json:"name"`
-	Desc        Text    `json:"desc"`
-	Kind        string  `json:"kind"` // "exp" | "coins"
-	Multiplier  float64 `json:"multiplier"`
-	DurationMin int     `json:"durationMinutes"`
-	Price       int64   `json:"price"`  // coins, charged on purchase
-	Rarity      string  `json:"rarity"` // common | rare | epic | legend
+	ID           string  `json:"id"`
+	Name         Text    `json:"name"`
+	Desc         Text    `json:"desc"`
+	Kind         string  `json:"kind"` // "exp" | "coins" | "time"
+	Multiplier   float64 `json:"multiplier"`
+	DurationMin  int     `json:"durationMinutes"`
+	ExtraSeconds int     `json:"extraSeconds"` // time items only: seconds one unit adds to a hand
+	Price        int64   `json:"price"`        // coins, charged on purchase
+	Rarity       string  `json:"rarity"`       // common | rare | epic | legend
 }
 
 // Catalog lists every item in showcase order (per kind: gentle → fierce,
@@ -100,6 +108,44 @@ var Catalog = []Def{
 			Th: "โบนัส EXP ส่วนตัว ×10 นาน 15 นาทีสุดระทึก ซ้อนกับบูสต์เซิร์ฟเวอร์แบบบวกกัน ใช้ซ้ำจะแทนที่บูสต์ EXP เดิม",
 		},
 	},
+	{
+		ID: "time30", Name: Text{En: "Sand Saver", Th: "นาฬิกาทรายต่อเวลา"}, Kind: "time",
+		ExtraSeconds: 30, Price: 150, Rarity: "common",
+		Desc: Text{
+			En: "When a solo hand's time runs out, the game asks before spending one unit to add 30 more seconds. One use per play session.",
+			Th: "เมื่อเวลาของมือเดี่ยวหมด เกมจะถามก่อนใช้ 1 ชิ้นเพื่อต่อเวลาอีก 30 วินาที ใช้ได้ 1 ครั้งต่อการเข้าเล่นหนึ่งครั้ง",
+		},
+	},
+	{
+		ID: "skip1", Name: Text{En: "Skip Pass", Th: "บัตรข้ามมือ"}, Kind: "skip",
+		Price: 120, Rarity: "common",
+		Desc: Text{
+			En: "The Skip button spends one unit to fold the current hand and show the solution. One skip per play session.",
+			Th: "กดปุ่ม \"ข้าม\" เพื่อใช้ 1 ชิ้น ยอมแพ้มือปัจจุบันและดูเฉลยทันที ใช้ได้ 1 ครั้งต่อการเข้าเล่นหนึ่งครั้ง",
+		},
+	},
+}
+
+// TimeItem returns the catalog's play-helper time item (kind "time") — the
+// one the round-extend path spends. False when the catalog carries none.
+func TimeItem() (Def, bool) {
+	for _, it := range Catalog {
+		if it.Kind == "time" {
+			return it, true
+		}
+	}
+	return Def{}, false
+}
+
+// SkipItem returns the catalog's play-helper skip item (kind "skip") — the
+// one the round-skip path spends. False when the catalog carries none.
+func SkipItem() (Def, bool) {
+	for _, it := range Catalog {
+		if it.Kind == "skip" {
+			return it, true
+		}
+	}
+	return Def{}, false
 }
 
 // ByID returns the item with the given id and whether it exists.

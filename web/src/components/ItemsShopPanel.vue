@@ -37,8 +37,8 @@ const fmt = (n) => (n ?? 0).toLocaleString('en-US')
 const bi = (obj) => obj?.[lang.value] ?? obj?.en ?? ''
 const qtyOf = (id) => owned.value[id] ?? 0
 const canAfford = (it) => balance.value >= it.price
-const ICONS = { exp: 'bolt', coins: 'coin' }
-const KIND_KEYS = { exp: 'itemKindExp', coins: 'itemKindCoins' }
+const ICONS = { exp: 'bolt', coins: 'coin', time: 'hourglass', skip: 'skip' }
+const KIND_KEYS = { exp: 'itemKindExp', coins: 'itemKindCoins', time: 'itemKindTime', skip: 'itemKindSkip' }
 const SHORT_KEYS = { exp: 'kindShortExp', coins: 'kindShortCoins' }
 const rarityKey = (r) => 'rarity' + String(r || 'common').charAt(0).toUpperCase() + String(r || 'common').slice(1)
 
@@ -145,8 +145,14 @@ defineExpose({ reload: load })
             <p class="desc">{{ bi(it.desc) }}</p>
 
             <div class="meta">
-              <span class="mult num">{{ t(SHORT_KEYS[it.kind] ?? 'kindShortExp') }} ×{{ it.multiplier }}</span>
-              <span class="dur"><Icon name="clock" :size="14" /><b class="num">{{ fmtDuration(it.durationMinutes * 60) }}</b></span>
+              <!-- play helpers sell their in-game effect, not a multiplier:
+                   time items read +30s, skip items read one hand per unit -->
+              <span v-if="it.kind === 'time'" class="mult num">{{ t('itemTimeBonus', { n: it.extraSeconds ?? 30 }) }}</span>
+              <span v-else-if="it.kind === 'skip'" class="mult num">{{ t('itemSkipOnce') }}</span>
+              <template v-else>
+                <span class="mult num">{{ t(SHORT_KEYS[it.kind] ?? 'kindShortExp') }} ×{{ it.multiplier }}</span>
+                <span class="dur"><Icon name="clock" :size="14" /><b class="num">{{ fmtDuration(it.durationMinutes * 60) }}</b></span>
+              </template>
               <span v-if="qtyOf(it.id)" class="bag num">{{ t('itemInBag', { n: fmt(qtyOf(it.id)) }) }}</span>
             </div>
 
@@ -169,7 +175,7 @@ defineExpose({ reload: load })
     </div>
 
     <!-- purchase confirmation: item, price, and the balance that remains -->
-    <div v-if="confirming" class="overlay" @click.self="closeConfirm">
+    <div v-if="confirming" class="overlay">
       <div class="panel confirm" :class="'r-' + confirming.rarity" role="dialog" :aria-label="t('confirmBuy')">
         <span class="confirm-title">{{ t('confirmBuy') }}</span>
         <div class="confirm-target">
@@ -179,7 +185,9 @@ defineExpose({ reload: load })
           </span>
           <div class="confirm-meta">
             <b class="name">{{ bi(confirming.name) }}</b>
-            <span class="mult num">×{{ confirming.multiplier }} · {{ fmtDuration(confirming.durationMinutes * 60) }}</span>
+            <span v-if="confirming.kind === 'time'" class="mult num">{{ t('itemTimeBonus', { n: confirming.extraSeconds ?? 30 }) }}</span>
+            <span v-else-if="confirming.kind === 'skip'" class="mult num">{{ t('itemSkipOnce') }}</span>
+            <span v-else class="mult num">×{{ confirming.multiplier }} · {{ fmtDuration(confirming.durationMinutes * 60) }}</span>
             <span class="price-row">
               <Icon name="coin" :size="22" />
               <b class="num">{{ fmt(confirming.price * count) }}</b>
@@ -187,7 +195,7 @@ defineExpose({ reload: load })
             </span>
           </div>
         </div>
-        <p class="note">{{ t('useItemNote') }}</p>
+        <p class="note">{{ confirming.kind === 'time' ? t('timeItemShopNote') : confirming.kind === 'skip' ? t('skipItemShopNote') : t('useItemNote') }}</p>
         <!-- how many units to buy: maxed by what the balance affords -->
         <div v-if="maxBuy > 1" class="countrow">
           <div class="counthead">
@@ -239,7 +247,10 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
 }
 .gate p { font-size: 0.9rem; max-width: 34ch; line-height: 1.5; }
 
+/* --rc defaults to the common tier here; each card's r-* class retints it
+   for everything inside, tile included */
 .grid {
+  --rc: var(--rarity-common);
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
   gap: 14px;
@@ -248,7 +259,7 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
    and the hover glow of each card, mirroring the skin-card rarity chips.
    The tier dials scale the aura with prestige: --r-line tints the card
    border, --r-wash the corner wash, --r-haze the resting outer glow. */
-.r-common { --rc: var(--text-dim); --r-line: 22%; --r-wash: 12%; --r-haze: 8%; }
+.r-common { --rc: var(--rarity-common); --r-line: 22%; --r-wash: 12%; --r-haze: 8%; }
 .r-rare { --rc: var(--info); --r-line: 48%; --r-wash: 22%; --r-haze: 16%; }
 .r-epic { --rc: #b283f0; --r-line: 58%; --r-wash: 28%; --r-haze: 20%; }
 .r-legend { --rc: var(--accent); --r-line: 66%; --r-wash: 32%; --r-haze: 24%; }
@@ -305,7 +316,6 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
    watermark glyph, a slow conic light sweep circling the icon, and the icon
    bobbing above it all */
 .tile {
-  --rc: var(--text-dim);
   position: relative;
   flex: none;
   align-self: center;
@@ -323,8 +333,8 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
   overflow: hidden;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 22px color-mix(in srgb, var(--rc) 22%, transparent),
-    0 6px 22px color-mix(in srgb, var(--rc) 20%, transparent);
+    0 0 14px color-mix(in srgb, var(--rc) 10%, transparent),
+    0 6px 16px color-mix(in srgb, var(--rc) 8%, transparent);
 }
 .tile .glyph {
   position: absolute;
@@ -335,7 +345,7 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
   position: relative;
   z-index: 1;
   color: var(--rc);
-  filter: drop-shadow(0 0 10px color-mix(in srgb, var(--rc) 60%, transparent));
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--rc) 32%, transparent));
 }
 @media (prefers-reduced-motion: no-preference) {
   .tile .ic { animation: item-bob 3.6s ease-in-out infinite; }

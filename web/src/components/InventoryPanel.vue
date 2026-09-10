@@ -34,8 +34,13 @@ const player = computed(() => currentPlayer.value)
 const signedIn = computed(() => !!player.value && !player.value.isGuest)
 const bi = (obj) => obj?.[lang.value] ?? obj?.en ?? ''
 const fmt = (n) => (n ?? 0).toLocaleString('en-US')
-const ICONS = { exp: 'bolt', coins: 'coin' }
-const KIND_KEYS = { exp: 'itemKindExp', coins: 'itemKindCoins' }
+const ICONS = { exp: 'bolt', coins: 'coin', time: 'hourglass', skip: 'skip' }
+const KIND_KEYS = { exp: 'itemKindExp', coins: 'itemKindCoins', time: 'itemKindTime', skip: 'itemKindSkip' }
+
+// play helpers (time + skip) never arm a window — the game spends them
+const inGame = (it) => it.kind === 'time' || it.kind === 'skip'
+const inGameIcon = (it) => (it.kind === 'time' ? 'hourglass' : 'skip')
+const inGameKey = (it) => (it.kind === 'time' ? 'itemInGameOnly' : 'itemSkipInGameOnly')
 
 // stacks the player actually holds, in catalog order
 const stacks = computed(() => catalog.value.filter((it) => (owned.value[it.id] ?? 0) > 0))
@@ -97,6 +102,7 @@ watch(
 const CAP_MS = 24 * 3600 * 1000
 
 function askUse(it) {
+  if (inGame(it)) return // play helpers spend themselves mid-game
   actionError.value = ''
   replacing.value = []
   extending.value = null
@@ -234,7 +240,13 @@ defineExpose({ reload: load })
               <Icon name="clock" :size="14" />
               <b class="num">{{ leftLabel(it.id) }}</b>
             </span>
-            <button class="btn use-btn" :disabled="busyId === it.id" @click="askUse(it)">
+            <!-- play helpers have no window to arm: time items spend themselves
+                 when a solo hand's clock hits zero, skip items when the Skip
+                 button is pressed — the row explains instead of offering Use -->
+            <span v-if="inGame(it)" class="ingame-note">
+              <Icon :name="inGameIcon(it)" :size="14" />{{ t(inGameKey(it)) }}
+            </span>
+            <button v-else class="btn use-btn" :disabled="busyId === it.id" @click="askUse(it)">
               <Icon name="play" :size="15" />{{ t('itemUse') }}
             </button>
           </div>
@@ -243,8 +255,8 @@ defineExpose({ reload: load })
     </div>
 
     <!-- use confirmation: what it arms and the window-extension rule -->
-    <div v-if="confirming" class="overlay" @click.self="closeConfirm">
-      <div class="panel confirm" role="dialog" :aria-label="t('confirmUse')">
+    <div v-if="confirming" class="overlay">
+      <div class="panel confirm" :class="'r-' + confirming.rarity" role="dialog" :aria-label="t('confirmUse')">
         <span class="confirm-title">{{ t('confirmUse') }}</span>
         <div class="confirm-target">
           <span class="tile big">
@@ -344,11 +356,18 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
 }
 .empty p { font-size: 0.88rem; max-width: 36ch; line-height: 1.5; }
 
-.list { display: flex; flex-direction: column; gap: 12px; }
+/* --rc defaults to the common tier here; each row's r-* class retints it
+   for everything inside, tile included */
+.list {
+  --rc: var(--rarity-common);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
 /* rarity palette shared with the shop cards' tile treatment. The tier dials
    scale the aura with prestige: --r-line tints the row border, --r-wash the
    corner wash, --r-haze the resting outer glow. */
-.r-common { --rc: var(--text-dim); --r-line: 22%; --r-wash: 12%; --r-haze: 8%; }
+.r-common { --rc: var(--rarity-common); --r-line: 22%; --r-wash: 12%; --r-haze: 8%; }
 .r-rare { --rc: var(--info); --r-line: 48%; --r-wash: 22%; --r-haze: 16%; }
 .r-epic { --rc: #b283f0; --r-line: 58%; --r-wash: 28%; --r-haze: 20%; }
 .r-legend { --rc: var(--accent); --r-line: 66%; --r-wash: 32%; --r-haze: 24%; }
@@ -402,7 +421,6 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
 }
 
 .tile {
-  --rc: var(--text-dim);
   position: relative;
   flex: none;
   display: grid;
@@ -418,8 +436,8 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
   overflow: hidden;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.06),
-    0 0 18px color-mix(in srgb, var(--rc) 22%, transparent),
-    0 5px 18px color-mix(in srgb, var(--rc) 20%, transparent);
+    0 0 12px color-mix(in srgb, var(--rc) 10%, transparent),
+    0 5px 14px color-mix(in srgb, var(--rc) 8%, transparent);
 }
 .tile .glyph {
   position: absolute;
@@ -430,7 +448,7 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
   position: relative;
   z-index: 1;
   color: var(--rc);
-  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--rc) 60%, transparent));
+  filter: drop-shadow(0 0 6px color-mix(in srgb, var(--rc) 32%, transparent));
 }
 @media (prefers-reduced-motion: no-preference) {
   .tile .ic { animation: item-bob 3.6s ease-in-out infinite; }
@@ -472,6 +490,21 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
 .side { flex: none; display: flex; flex-direction: column; align-items: stretch; gap: 7px; }
 .active-chip { align-self: center; display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; font-size: 0.72rem; color: var(--good); border-color: rgba(126, 217, 87, 0.4); }
 .active-chip b { color: var(--good); }
+/* time items: no Use button — the row explains where they spend themselves */
+.ingame-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 4px 10px;
+  font-size: 0.72rem;
+  color: var(--text-mute);
+  border: 1px dashed var(--line);
+  border-radius: var(--r-sm);
+  text-align: left;
+  max-width: 150px;
+  line-height: 1.4;
+}
 .use-btn {
   min-width: 96px;
   justify-content: center;

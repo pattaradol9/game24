@@ -418,3 +418,269 @@ func TestExpiredPersonalBoostStopsPaying(t *testing.T) {
 		t.Fatalf("exp payout = %d, want base 100 after expiry", payout.ExpGain)
 	}
 }
+
+func TestExtendRoundSpendsItemOncePerSession(t *testing.T) {
+	s := openTest(t)
+
+	// guests cannot extend: only Google players hold items
+	g, _, err := s.CreateGuest("Temp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gr, err := s.CreateRound(g.ID, "queen", []int{1, 2, 3, 4}, "sess-g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExtendRound(g.ID, gr.ID, "time30"); !errors.Is(err, ErrGoogleRequired) {
+		t.Fatalf("guest extend = %v, want ErrGoogleRequired", err)
+	}
+
+	id, _ := googlePlayer(t, s, "extend1")
+	// nothing in the bag yet
+	r1, err := s.CreateRound(id, "queen", []int{1, 2, 3, 4}, "sess-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExtendRound(id, r1.ID, "time30"); !errors.Is(err, ErrNoItems) {
+		t.Fatalf("extend with empty bag = %v, want ErrNoItems", err)
+	}
+	// fund and buy two units of the time item
+	if _, _, err := s.AwardEXP(id, "queen", 5000, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BuyItem(id, "time30", 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExtendRound(id, r1.ID, "exp2"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("extend with a boost item = %v, want ErrNotFound", err)
+	}
+	// a mid-play press: 40s played away leaves room for the full +30
+	if err := s.ShiftRoundDealt(r1.ID, -40*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	extended, err := s.ExtendRound(id, r1.ID, "time30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if extended.ExtendSec != 30 || extended.Status != "open" {
+		t.Fatalf("round after extend = %+v, want extend_sec 30, still open", extended)
+	}
+	items, err := s.PlayerItems(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != "time30" || items[0].Qty != 1 {
+		t.Fatalf("inventory = %+v, want one time30 left", items)
+	}
+
+	// the once-per-session rule: a later hand of the SAME session is refused
+	// even though a unit is still in the bag
+	r2, err := s.CreateRound(id, "queen", []int{5, 6, 7, 8}, "sess-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExtendRound(id, r2.ID, "time30"); !errors.Is(err, ErrSessionExtendUsed) {
+		t.Fatalf("second extend in session = %v, want ErrSessionExtendUsed", err)
+	}
+	if n, err := s.PlayerItems(id); err != nil || len(n) != 1 || n[0].Qty != 1 {
+		t.Fatalf("refused extend must not consume: %+v (%v)", n, err)
+	}
+
+	// a fresh session extends again — and only the new round is widened
+	r3, err := s.CreateRound(id, "queen", []int{2, 3, 4, 5}, "sess-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ShiftRoundDealt(r3.ID, -40*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExtendRound(id, r3.ID, "time30"); err != nil {
+		t.Fatal(err)
+	}
+	fresh1, err := s.RoundByID(r1.ID, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh1.ExtendSec != 30 {
+		t.Fatalf("first round extend_sec = %d, want untouched 30", fresh1.ExtendSec)
+	}
+
+	// a finished round refuses the extension even in a fresh session
+	if err := s.FinishRound(r3.ID, "skipped", 0, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExtendRound(id, r3.ID, "time30"); !errors.Is(err, ErrRoundClosed) {
+		t.Fatalf("extend finished round = %v, want ErrRoundClosed", err)
+	}
+	// and extending the SAME open round twice trips the session rule, not a
+	// double-extend of one hand — a fresh session needs a fresh unit
+	r4, err := s.CreateRound(id, "queen", []int{2, 3, 4, 6}, "sess-c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BuyItem(id, "time30", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ShiftRoundDealt(r4.ID, -40*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExtendRound(id, r4.ID, "time30"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExtendRound(id, r4.ID, "time30"); !errors.Is(err, ErrSessionExtendUsed) {
+		t.Fatalf("second extend of one round = %v, want ErrSessionExtendUsed", err)
+	}
+}
+
+// The Add-time button fires mid-play, so the extra time may only fill the
+// room the hand has already played away: remaining time stays inside the
+// mode's base window, and a press with the full window ahead adds nothing
+// and consumes nothing.
+func TestExtendRoundClampsToBaseWindow(t *testing.T) {
+	s := openTest(t)
+	id, _ := googlePlayer(t, s, "extend2")
+	if _, _, err := s.AwardEXP(id, "queen", 5000, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BuyItem(id, "time30", 2); err != nil {
+		t.Fatal(err)
+	}
+
+	// a hand with its whole 90s window still ahead has no room: dealt_at is
+	// stamped 5s into the future so the played-away time stays ≤ 0 no matter
+	// how slow the machine is — refused clean, nothing consumed
+	r1, err := s.CreateRound(id, "queen", []int{1, 2, 3, 4}, "sess-full")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ShiftRoundDealt(r1.ID, 5*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExtendRound(id, r1.ID, "time30"); !errors.Is(err, ErrRoundTimeFull) {
+		t.Fatalf("extend at full time = %v, want ErrRoundTimeFull", err)
+	}
+	if n, err := s.PlayerItems(id); err != nil || len(n) != 1 || n[0].Qty != 2 {
+		t.Fatalf("refused extend must not consume: %+v (%v)", n, err)
+	}
+	fresh, err := s.RoundByID(r1.ID, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.ExtendSec != 0 {
+		t.Fatalf("refused extend stamped extend_sec = %d, want 0", fresh.ExtendSec)
+	}
+
+	// 10s played away of the 90s window: only 10s of the item fits, topping
+	// the hand back up to the base limit instead of 10s past it
+	r2, err := s.CreateRound(id, "queen", []int{5, 6, 7, 8}, "sess-part")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ShiftRoundDealt(r2.ID, -10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ExtendRound(id, r2.ID, "time30")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ExtendSec != 10 {
+		t.Fatalf("extend 10s into a 90s hand = extend_sec %d, want clamped 10", got.ExtendSec)
+	}
+	if n, err := s.PlayerItems(id); err != nil || len(n) != 1 || n[0].Qty != 1 {
+		t.Fatalf("inventory after clamped extend = %+v (%v), want one time30 left", n, err)
+	}
+}
+
+func TestSkipRoundSpendsItemOncePerSession(t *testing.T) {
+	s := openTest(t)
+
+	// guests cannot skip: only Google players hold items
+	g, _, err := s.CreateGuest("Temp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gr, err := s.CreateRound(g.ID, "queen", []int{1, 2, 3, 4}, "sess-g")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SkipRound(g.ID, gr.ID); !errors.Is(err, ErrGoogleRequired) {
+		t.Fatalf("guest skip = %v, want ErrGoogleRequired", err)
+	}
+
+	id, _ := googlePlayer(t, s, "skip1")
+	// nothing in the bag yet
+	r1, err := s.CreateRound(id, "queen", []int{1, 2, 3, 4}, "sess-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SkipRound(id, r1.ID); !errors.Is(err, ErrNoItems) {
+		t.Fatalf("skip with empty bag = %v, want ErrNoItems", err)
+	}
+	// fund and buy two units of the skip item
+	if _, _, err := s.AwardEXP(id, "queen", 5000, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BuyItem(id, "skip1", 2); err != nil {
+		t.Fatal(err)
+	}
+	skipped, err := s.SkipRound(id, r1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if skipped.Status != "skipped" || skipped.SkipUsed != 1 {
+		t.Fatalf("round after skip = %+v, want status skipped with the flag stamped", skipped)
+	}
+	items, err := s.PlayerItems(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != "skip1" || items[0].Qty != 1 {
+		t.Fatalf("inventory = %+v, want one skip1 left", items)
+	}
+
+	// the once-per-session rule: a later hand of the SAME session is refused
+	// even though a unit is still in the bag
+	r2, err := s.CreateRound(id, "queen", []int{5, 6, 7, 8}, "sess-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SkipRound(id, r2.ID); !errors.Is(err, ErrSessionSkipUsed) {
+		t.Fatalf("second skip in session = %v, want ErrSessionSkipUsed", err)
+	}
+	if n, err := s.PlayerItems(id); err != nil || len(n) != 1 || n[0].Qty != 1 {
+		t.Fatalf("refused skip must not consume: %+v (%v)", n, err)
+	}
+
+	// time and skip budgets are independent: the extend quota of the session
+	// is still open even after the skip was spent
+	if err := s.BuyItem(id, "time30", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ShiftRoundDealt(r2.ID, -40*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ExtendRound(id, r2.ID, "time30"); err != nil {
+		t.Fatalf("extend after an item skip = %v, want the quotas independent", err)
+	}
+
+	// a fresh session skips again
+	r3, err := s.CreateRound(id, "queen", []int{2, 3, 4, 5}, "sess-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SkipRound(id, r3.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// a finished round refuses the skip
+	r4, err := s.CreateRound(id, "queen", []int{2, 3, 4, 6}, "sess-c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FinishRound(r4.ID, "skipped", 0, 1000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SkipRound(id, r4.ID); !errors.Is(err, ErrRoundClosed) {
+		t.Fatalf("skip finished round = %v, want ErrRoundClosed", err)
+	}
+}

@@ -35,8 +35,13 @@ export const api = {
   submitRound: (roundId, steps, token) =>
     request(`/rounds/${roundId}/submit`, { method: 'POST', body: { steps }, token }),
   skipRound: (roundId, token) => request(`/rounds/${roundId}/skip`, { method: 'POST', body: {}, token }),
+  // free fold for a hand whose countdown genuinely ran out (the Skip button
+  // itself goes through the item-gated skipRound)
+  timeoutRound: (roundId, token) => request(`/rounds/${roundId}/timeout`, { method: 'POST', body: {}, token }),
   hintRound: (roundId, token) => request(`/rounds/${roundId}/hint`, { method: 'POST', body: {}, token }),
-  leaderboard: (mode, limit = 50) => request(`/leaderboard?mode=${mode}&limit=${limit}`),
+  extendRound: (roundId, token) => request(`/rounds/${roundId}/extend`, { method: 'POST', body: {}, token }),
+  leaderboard: (mode, period = 'alltime', limit = 50) =>
+    request(`/leaderboard?mode=${mode}&period=${period}&limit=${limit}`),
   createRoom: (cfg, token) => request('/rooms', { method: 'POST', body: cfg, token }),
   roomInfo: (code) => request(`/rooms/${code}`),
   achievements: (token) => request('/achievements', { token }),

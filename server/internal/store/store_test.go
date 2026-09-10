@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pattaradol9/game24/server/internal/crypto"
 )
@@ -65,7 +66,8 @@ func TestAwardEXPAndLeaderboard(t *testing.T) {
 		t.Fatalf("guest stat = %+v", st)
 	}
 
-	// google player wins two hands then skips one
+	// google player wins two hands then skips one; the board ranks the BEST
+	// single hand, so 150+150 stays a 150 high score
 	for i := 0; i < 2; i++ {
 		if _, _, err = s.AwardEXP(gp.ID, "queen", 150, true); err != nil {
 			t.Fatal(err)
@@ -75,7 +77,7 @@ func TestAwardEXPAndLeaderboard(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	board, err := s.Leaderboard("queen", 10, 0)
+	board, err := s.ScoreLeaderboard("queen", false, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +85,7 @@ func TestAwardEXPAndLeaderboard(t *testing.T) {
 		t.Fatalf("board has %d rows, want 1 (guest hidden)", len(board))
 	}
 	row := board[0]
-	if row.PlayerID != gp.ID || row.Exp != 300 || row.Nickname != "A" {
+	if row.PlayerID != gp.ID || row.Score != 150 || row.HandsSolved != 2 || row.Nickname != "A" {
 		t.Fatalf("row = %+v", row)
 	}
 
@@ -97,6 +99,99 @@ func TestAwardEXPAndLeaderboard(t *testing.T) {
 	qs := after.Stats["queen"]
 	if qs.CurrentStreak != 0 || qs.BestStreak != 2 || qs.HandsSkipped != 1 {
 		t.Fatalf("queen stat = %+v", qs)
+	}
+}
+
+func TestScoreLeaderboardPeriodsAndBoostImmunity(t *testing.T) {
+	s := openTest(t)
+	gp, _, err := s.GoogleLogin("sub-score", "s@b.c", "S", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// a ×3 EXP boost is live: the hand banks boosted EXP but the score
+	// ledger must record the raw points
+	if _, err := s.SetBoostConfig("admin:x", BoostKindExp, 3, 60, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnableBoost("admin:x", BoostKindExp); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AwardEXP(gp.ID, "queen", 100, true); err != nil {
+		t.Fatal(err)
+	}
+	board, err := s.ScoreLeaderboard("queen", false, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(board) != 1 || board[0].Score != 100 {
+		t.Fatalf("score must stay raw under a boost, got %+v", board)
+	}
+
+	// a hand scored last week counts all-time but not this week
+	if _, err := s.db.Exec(`UPDATE player_scores SET awarded_at = datetime('now', '-8 days')`); err != nil {
+		t.Fatal(err)
+	}
+	weekly, err := s.ScoreLeaderboard("queen", true, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(weekly) != 0 {
+		t.Fatalf("last week's hand leaked into the weekly board: %+v", weekly)
+	}
+	allTime, err := s.ScoreLeaderboard("queen", false, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allTime) != 1 || allTime[0].Score != 100 {
+		t.Fatalf("all-time board lost the old hand: %+v", allTime)
+	}
+
+	// this week's hand shows up on the weekly board; the high score never
+	// accumulates — the 40-point hand must not stack onto the 100
+	if _, _, err := s.AwardEXP(gp.ID, "queen", 40, true); err != nil {
+		t.Fatal(err)
+	}
+	weekly, err = s.ScoreLeaderboard("queen", true, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(weekly) != 1 || weekly[0].Score != 40 || weekly[0].HandsSolved != 1 {
+		t.Fatalf("weekly board = %+v, want one 40-point hand", weekly)
+	}
+	allTime, err = s.ScoreLeaderboard("queen", false, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(allTime) != 1 || allTime[0].Score != 100 || allTime[0].HandsSolved != 2 {
+		t.Fatalf("all-time high score = %+v, want 100 across 2 hands", allTime)
+	}
+
+	// the week window opens on Monday 00:00 UTC
+	ws := WeekStartUTC(time.Date(2026, 9, 9, 15, 30, 0, 0, time.UTC)) // a Wednesday
+	if ws.Weekday() != time.Monday || ws.Hour() != 0 || ws.UTC().Day() != 7 {
+		t.Fatalf("week start = %v, want Mon Sep 7 00:00 UTC", ws)
+	}
+}
+
+func TestResetPlayerStatsClearsScore(t *testing.T) {
+	s := openTest(t)
+	gp, _, err := s.GoogleLogin("sub-reset", "r@b.c", "R", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.AwardEXP(gp.ID, "queen", 100, true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ResetPlayerStats("admin:x", gp.ID, "queen"); err != nil {
+		t.Fatal(err)
+	}
+	board, err := s.ScoreLeaderboard("queen", false, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(board) != 0 {
+		t.Fatalf("score survived the stat reset: %+v", board)
 	}
 }
 

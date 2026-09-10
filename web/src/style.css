@@ -26,6 +26,9 @@
   --good: #3fbf83;
   --bad: #ef5f5f;
   --info: #6aa5f0;
+  /* rarity tiers share the palette: common dark green, rare --info,
+     epic #b283f0, legend --accent */
+  --rarity-common: #2c9658;
 
   /* playing-card ink */
   --card-face: #f7f8fb;

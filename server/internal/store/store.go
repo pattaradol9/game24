@@ -118,8 +118,20 @@ func (s *Store) migrate() error {
 			points      INTEGER NOT NULL DEFAULT 0,
 			elapsed_ms  INTEGER NOT NULL DEFAULT 0,
 			hints_used  INTEGER NOT NULL DEFAULT 0,
+			skip_used   INTEGER NOT NULL DEFAULT 0,
 			dealt_at    TEXT NOT NULL DEFAULT (datetime('now')),
 			finished_at TEXT
+		)`,
+		// gameplay score ledger: one row per solved hand with its raw points.
+		// Score is a metric of its own — separate from EXP/coins and never
+		// multiplied by payout boosts — so the leaderboard ranks pure play.
+		// The awarded_at timestamp is what weekly windows aggregate over.
+		`CREATE TABLE IF NOT EXISTS player_scores (
+			id         INTEGER PRIMARY KEY,
+			player_id  TEXT NOT NULL REFERENCES players(id) ON DELETE CASCADE,
+			mode       TEXT NOT NULL,
+			points     INTEGER NOT NULL,
+			awarded_at TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
 		`CREATE TABLE IF NOT EXISTS event_logs (
 		id     TEXT PRIMARY KEY,
@@ -160,6 +172,12 @@ func (s *Store) migrate() error {
 		`ALTER TABLE players ADD COLUMN banned_at TEXT`,
 		`ALTER TABLE players ADD COLUMN ban_reason TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE rounds ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
+		// seconds one time-extension item added to the hand's countdown
+		// (0 = the round never got extended)
+		`ALTER TABLE rounds ADD COLUMN extend_sec INTEGER NOT NULL DEFAULT 0`,
+		// 1 = the hand was folded with a skip-pass item (the once-per-session
+		// skip rule keys off this flag)
+		`ALTER TABLE rounds ADD COLUMN skip_used INTEGER NOT NULL DEFAULT 0`,
 		// coin economy + achievements + skins
 		`ALTER TABLE players ADD COLUMN total_coins INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE players ADD COLUMN total_wins INTEGER NOT NULL DEFAULT 0`,
@@ -231,6 +249,7 @@ func (s *Store) migrate() error {
 	}
 	indexes := []string{
 		`CREATE INDEX IF NOT EXISTS idx_pms_board ON player_mode_stats(mode, exp DESC, hands_solved DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_scores_board ON player_scores(mode, player_id, points)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_ts ON event_logs(ts DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_events_action ON event_logs(action, ts DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_rounds_dealt ON rounds(dealt_at DESC)`,

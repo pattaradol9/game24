@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -328,4 +329,257 @@ func TestHintSessionQuota(t *testing.T) {
 	if code := hint(r4); code != 200 {
 		t.Fatalf("hint in new session: %d", code)
 	}
+}
+
+// stepsFor turns the solver's trace of a dealt hand into a submit body.
+func stepsFor(t *testing.T, numbers []int) []map[string]any {
+	t.Helper()
+	sols := game.Solve(numbers)
+	if len(sols) == 0 {
+		t.Fatalf("unsolvable hand dealt: %v", numbers)
+	}
+	steps := []map[string]any{}
+	for _, st := range sols[0].Trace {
+		step := map[string]any{"op": st.Op}
+		if st.Left.IsStep {
+			step["left"] = map[string]any{"step": st.Left.Step, "isStep": true}
+		} else {
+			step["left"] = map[string]any{"card": st.Left.Card}
+		}
+		if st.Right.IsStep {
+			step["right"] = map[string]any{"step": st.Right.Step, "isStep": true}
+		} else {
+			step["right"] = map[string]any{"card": st.Right.Card}
+		}
+		steps = append(steps, step)
+	}
+	return steps
+}
+
+func TestRoundTimeExtend(t *testing.T) {
+	api, mux := newTestAPI(t)
+
+	// guests are gated out like every other item action
+	_, res := post(t, mux, "/api/v1/players", map[string]string{"nickname": "ExtGuest"}, "")
+	guestToken := data(res)["token"].(string)
+	_, res = post(t, mux, "/api/v1/rounds", map[string]string{"mode": "queen"}, guestToken)
+	guestRound := data(res)["roundId"].(string)
+	if code, _ := post(t, mux, "/api/v1/rounds/"+guestRound+"/extend", map[string]any{}, guestToken); code != 403 {
+		t.Fatalf("guest extend = %d, want 403", code)
+	}
+
+	// fund a Google player with two time items
+	p, token, err := api.Store.GoogleLogin("sub-extend", "extend@mail.com", "Ext", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := api.Store.AwardEXP(p.ID, "queen", 5000, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := api.Store.BuyItem(p.ID, "time30", 2); err != nil {
+		t.Fatal(err)
+	}
+
+	// first hand of session s1: the extend widens the window 90 → 120s
+	code, res := post(t, mux, "/api/v1/rounds", map[string]any{"mode": "queen", "sessionId": "s1"}, token)
+	if code != 200 {
+		t.Fatalf("create round: %d %v", code, res)
+	}
+	roundID := data(res)["roundId"].(string)
+	numsRaw := data(res)["numbers"].([]any)
+	numbers := make([]int, 4)
+	for i, n := range numsRaw {
+		numbers[i] = int(n.(float64))
+	}
+	// a mid-play press: 40s of the 90s window played away leaves room for
+	// the full +30 (the clamp only bites near the top of the clock)
+	if err := api.Store.ShiftRoundDealt(roundID, -40*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	code, res = post(t, mux, "/api/v1/rounds/"+roundID+"/extend", map[string]any{}, token)
+	if code != 200 {
+		t.Fatalf("extend: %d %v", code, res)
+	}
+	if tl := int(data(res)["timeLimit"].(float64)); tl != 120 {
+		t.Fatalf("timeLimit after extend = %d, want 120 (queen 90 + 30)", tl)
+	}
+	if extra := int(data(res)["extraSeconds"].(float64)); extra != 30 {
+		t.Fatalf("extraSeconds = %d, want 30", extra)
+	}
+	player := data(res)["player"].(map[string]any)
+	items := player["items"].([]any)
+	if len(items) != 1 {
+		t.Fatalf("inventory after extend = %v, want one time30 stack", items)
+	}
+	stack := items[0].(map[string]any)
+	if stack["id"] != "time30" || int(stack["qty"].(float64)) != 1 {
+		t.Fatalf("stack = %v, want time30 ×1", stack)
+	}
+
+	// the generic use endpoint refuses time items with a clear reason
+	if code, _ := post(t, mux, "/api/v1/items/time30/use", map[string]any{}, token); code != 400 {
+		t.Fatalf("time item via /use should be 400")
+	}
+
+	// the once-per-session rule: the NEXT hand of s1 is refused
+	code, res = post(t, mux, "/api/v1/rounds", map[string]any{"mode": "queen", "sessionId": "s1"}, token)
+	if code != 200 {
+		t.Fatalf("second round: %d %v", code, res)
+	}
+	r2 := data(res)["roundId"].(string)
+	if code, _ := post(t, mux, "/api/v1/rounds/"+r2+"/extend", map[string]any{}, token); code != 400 {
+		t.Fatalf("second extend in session = %d, want 400", code)
+	}
+
+	// the widened window really pays: backdate the deal to 100s ago — past
+	// the plain queen window (90s + 10s grace) but inside the extended one
+	// (90 + 30 + 10) — then a correct submit still banks points
+	if err := api.Store.ShiftRoundDealt(roundID, -100*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	code, res = post(t, mux, "/api/v1/rounds/"+roundID+"/submit", map[string]any{"steps": stepsFor(t, numbers)}, token)
+	if code != 200 {
+		t.Fatalf("submit 100s into an extended window = %d %v, want 200", code, res)
+	}
+	if pts := data(res)["points"].(float64); pts <= 0 {
+		t.Fatalf("points = %v, want a positive score", pts)
+	}
+	// the score/EXP split: EXP banks from its own (level-unmultiplied) curve,
+	// so it must sit strictly below the level-multiplied score for a leveled
+	// player
+	if exp := data(res)["exp"].(float64); exp <= 0 || exp >= data(res)["points"].(float64) {
+		t.Fatalf("exp = %v, want a positive payout strictly below the score %v", exp, data(res)["points"])
+	}
+
+	// a plain (never-extended) hand is long dead at 100s: the same backdate
+	// closes it as expired
+	code, res = post(t, mux, "/api/v1/rounds", map[string]any{"mode": "queen", "sessionId": "s2"}, token)
+	if code != 200 {
+		t.Fatalf("third round: %d %v", code, res)
+	}
+	r3 := data(res)["roundId"].(string)
+	numsRaw = data(res)["numbers"].([]any)
+	for i, n := range numsRaw {
+		numbers[i] = int(n.(float64))
+	}
+	if err := api.Store.ShiftRoundDealt(r3, -100*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := post(t, mux, "/api/v1/rounds/"+r3+"/submit", map[string]any{"steps": stepsFor(t, numbers)}, token); code != 408 {
+		t.Fatalf("submit 100s into a plain window = %d, want 408", code)
+	}
+}
+
+// The Skip button is item-gated — one Skip Pass per play session — while the
+// plain timeout endpoint folds hands for free only after their window
+// genuinely ran out (verified server-side, extension included).
+func TestRoundSkipItemAndTimeout(t *testing.T) {
+	api, mux := newTestAPI(t)
+
+	// guests hold no items: their skip is the Google gate
+	_, res := post(t, mux, "/api/v1/players", map[string]string{"nickname": "SkipGuest"}, "")
+	guestToken := data(res)["token"].(string)
+	_, res = post(t, mux, "/api/v1/rounds", map[string]string{"mode": "queen"}, guestToken)
+	guestRound := data(res)["roundId"].(string)
+	if code, _ := post(t, mux, "/api/v1/rounds/"+guestRound+"/skip", map[string]any{}, guestToken); code != 403 {
+		t.Fatalf("guest skip = %d, want 403", code)
+	}
+
+	// a Google player, first hand BEFORE owning any pass
+	p, token, err := api.Store.GoogleLogin("sub-skip", "skip@mail.com", "Skipper", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := api.Store.AwardEXP(p.ID, "queen", 5000, true); err != nil {
+		t.Fatal(err)
+	}
+	newRound := func(session string) string {
+		code, res := post(t, mux, "/api/v1/rounds", map[string]any{"mode": "queen", "sessionId": session}, token)
+		if code != 200 {
+			t.Fatalf("create round: %d %v", code, res)
+		}
+		return data(res)["roundId"].(string)
+	}
+	r0 := newRound("s0")
+	if code, _ := post(t, mux, "/api/v1/rounds/"+r0+"/skip", map[string]any{}, token); code != 400 {
+		t.Fatalf("skip with empty bag = %d, want 400", code)
+	}
+
+	// two passes in the bag; the generic use endpoint refuses play helpers
+	if err := api.Store.BuyItem(p.ID, "skip1", 2); err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := post(t, mux, "/api/v1/items/skip1/use", map[string]any{}, token); code != 400 {
+		t.Fatalf("skip item via /use should be 400")
+	}
+
+	// the first fold spends one pass and returns the solution
+	code, res := post(t, mux, "/api/v1/rounds/"+r0+"/skip", map[string]any{}, token)
+	if code != 200 {
+		t.Fatalf("item skip: %d %v", code, res)
+	}
+	if sol, _ := data(res)["solution"].(string); sol == "" {
+		t.Fatal("item skip returned no solution")
+	}
+	if stack := bagStack(t, data(res)["player"], "skip1"); stack != 1 {
+		t.Fatalf("skip1 in bag after skip = %d, want 1", stack)
+	}
+
+	// the once-per-session rule: the NEXT hand of s0 is refused even with a
+	// pass left, and the refusal consumes nothing
+	r1 := newRound("s0")
+	if code, _ := post(t, mux, "/api/v1/rounds/"+r1+"/skip", map[string]any{}, token); code != 400 {
+		t.Fatalf("second skip in session = %d, want 400", code)
+	}
+	_, res = get(t, mux, "/api/v1/me", token)
+	if stack := bagStack(t, data(res)["player"], "skip1"); stack != 1 {
+		t.Fatalf("skip1 in bag after refused skip = %d, want 1", stack)
+	}
+
+	// a fresh session skips again — the bag runs dry
+	r2 := newRound("s1")
+	if code, res := post(t, mux, "/api/v1/rounds/"+r2+"/skip", map[string]any{}, token); code != 200 {
+		t.Fatalf("skip in fresh session: %d %v", code, res)
+	}
+	_, res = get(t, mux, "/api/v1/me", token)
+	if stack := bagStack(t, data(res)["player"], "skip1"); stack != 0 {
+		t.Fatalf("skip1 in bag after both passes = %d, want 0", stack)
+	}
+
+	// the timeout endpoint refuses a live hand…
+	r3 := newRound("s2")
+	if code, _ := post(t, mux, "/api/v1/rounds/"+r3+"/timeout", map[string]any{}, token); code != 400 {
+		t.Fatalf("timeout on a live hand = %d, want 400", code)
+	}
+	// …then folds it once the window (90s + grace) is truly gone
+	if err := api.Store.ShiftRoundDealt(r3, -120*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	code, res = post(t, mux, "/api/v1/rounds/"+r3+"/timeout", map[string]any{}, token)
+	if code != 200 {
+		t.Fatalf("timeout on a dead hand: %d %v", code, res)
+	}
+	if sol, _ := data(res)["solution"].(string); sol == "" {
+		t.Fatal("timeout returned no solution")
+	}
+	if code, _ := post(t, mux, "/api/v1/rounds/"+r3+"/timeout", map[string]any{}, token); code != 409 {
+		t.Fatalf("second timeout = %d, want 409", code)
+	}
+}
+
+// bagStack reads one item's qty out of a player JSON (0 when absent).
+func bagStack(t *testing.T, player any, itemID string) int {
+	t.Helper()
+	p, ok := player.(map[string]any)
+	if !ok {
+		t.Fatalf("player JSON = %v", player)
+	}
+	items, _ := p["items"].([]any)
+	for _, raw := range items {
+		it := raw.(map[string]any)
+		if it["id"] == itemID {
+			return int(it["qty"].(float64))
+		}
+	}
+	return 0
 }

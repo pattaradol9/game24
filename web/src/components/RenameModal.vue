@@ -41,7 +41,7 @@ async function save() {
 </script>
 
 <template>
-  <div class="overlay" @click.self="$emit('close')">
+  <div class="overlay">
     <div class="panel">
       <span class="hero-ic"><AnimatedIcon name="edit" :size="26" /></span>
       <h3>{{ t('profileRename') }}</h3>

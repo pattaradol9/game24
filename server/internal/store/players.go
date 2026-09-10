@@ -309,8 +309,9 @@ func (s *Store) ModeStats(playerID string) (map[string]ModeStat, error) {
 	return stats, rows.Err()
 }
 
-// AwardEXP updates both ledgers in one transaction: per-mode stats for the
-// leaderboard and the player's total EXP for level/tier. solved=false records
+// AwardEXP updates both ledgers in one transaction: per-mode stats and the
+// player's total EXP for level/tier, plus the score ledger behind the
+// leaderboard (raw points, boost-free). solved=false records
 // a skip (resets streak, awards nothing). Solved hands also earn coins
 // (CoinsForHand), mirroring how EXP tracks every finished hand. Live boosts
 // multiply what the hand pays — server-wide campaigns and the player's own
@@ -360,6 +361,11 @@ func (s *Store) awardEXP(playerID, mode string, points int64, solved bool) (Mode
 			WHERE id = ?`, payout.ExpGain, payout.CoinGain, playerID); err != nil {
 			return ModeStat{}, 0, payout, err
 		}
+		// the score ledger banks the RAW points — payout boosts inflate the
+		// EXP/coin ledgers above, never the leaderboard score
+		if err = recordScoreTx(tx, playerID, mode, points); err != nil {
+			return ModeStat{}, 0, payout, err
+		}
 	} else {
 		if _, err = tx.Exec(`UPDATE player_mode_stats SET
 			hands_skipped = hands_skipped + 1,
@@ -394,42 +400,6 @@ type LeaderRow struct {
 	TierOverride string // admin tier override ('' = tier derives from exp)
 }
 
-// Leaderboard returns the ranked list for one mode; guests and banned
-// players never appear.
-func (s *Store) Leaderboard(mode string, limit, offset int) ([]LeaderRow, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 50
-	}
-	rows, err := s.db.Query(`SELECT p.id, p.nickname_enc, p.picture_enc, m.exp, m.hands_solved, m.best_streak, p.tier
-		FROM player_mode_stats m JOIN players p ON p.id = m.player_id
-		WHERE m.mode = ? AND p.is_guest = 0 AND p.banned = 0
-		ORDER BY m.exp DESC, m.hands_solved DESC, m.best_streak DESC
-		LIMIT ? OFFSET ?`, mode, limit, offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []LeaderRow
-	for rows.Next() {
-		var (
-			r       LeaderRow
-			nickEnc string
-			picEnc  string
-		)
-		if err := rows.Scan(&r.PlayerID, &nickEnc, &picEnc, &r.Exp, &r.HandsSolved, &r.BestStreak, &r.TierOverride); err != nil {
-			return nil, err
-		}
-		if r.Nickname, err = s.cr.Decrypt(nickEnc, "players.nickname"); err != nil {
-			return nil, err
-		}
-		if r.Picture, err = s.cr.Decrypt(picEnc, "players.picture"); err != nil {
-			return nil, err
-		}
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
 // --- single-player rounds ---
 
 type Round struct {
@@ -442,6 +412,8 @@ type Round struct {
 	Points    int64
 	ElapsedMs int64
 	HintsUsed int64
+	ExtendSec int64 // seconds a time-extension item added to this hand's countdown
+	SkipUsed  int64 // 1 = the hand was folded with a skip-pass item
 	DealtAt   time.Time
 }
 
@@ -466,9 +438,9 @@ func (s *Store) RoundByID(id, playerID string) (Round, error) {
 		numsJSON   string
 		dealtAtStr string
 	)
-	err := s.db.QueryRow(`SELECT id, player_id, mode, session_id, numbers, status, points, elapsed_ms, hints_used, dealt_at
+	err := s.db.QueryRow(`SELECT id, player_id, mode, session_id, numbers, status, points, elapsed_ms, hints_used, extend_sec, skip_used, dealt_at
 		FROM rounds WHERE id = ? AND player_id = ?`, id, playerID).
-		Scan(&r.ID, &r.PlayerID, &r.Mode, &r.SessionID, &numsJSON, &r.Status, &r.Points, &r.ElapsedMs, &r.HintsUsed, &dealtAtStr)
+		Scan(&r.ID, &r.PlayerID, &r.Mode, &r.SessionID, &numsJSON, &r.Status, &r.Points, &r.ElapsedMs, &r.HintsUsed, &r.ExtendSec, &r.SkipUsed, &dealtAtStr)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, ErrNotFound
 	}
@@ -499,4 +471,12 @@ func (s *Store) FinishRound(id, status string, points, elapsedMs int64) error {
 		return err
 	}
 	return nil
+}
+
+// ShiftRoundDealt moves a round's dealt_at by the signed duration — a seam
+// for tests that exercise the expiry window without waiting real time.
+func (s *Store) ShiftRoundDealt(roundID string, d time.Duration) error {
+	_, err := s.db.Exec(`UPDATE rounds SET dealt_at = ? WHERE id = ?`,
+		sqliteTime(time.Now().UTC().Add(d)), roundID)
+	return err
 }

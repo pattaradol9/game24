@@ -34,7 +34,7 @@ async function create() {
 </script>
 
 <template>
-  <div class="overlay" @click.self="$emit('close')">
+  <div class="overlay">
     <div class="panel modal">
       <span class="hero-ic"><AnimatedIcon name="crown" :size="26" /></span>
       <h2>{{ t('createRoom') }}</h2>

@@ -8,19 +8,26 @@ import Suit from './Suit.vue'
 import TierAvatar from './TierAvatar.vue'
 import CrownMark from './CrownMark.vue'
 
+// ranking windows; the server counts weekly hands since Monday 00:00 UTC
+const PERIODS = [
+  { id: 'weekly', label: 'weekly' },
+  { id: 'alltime', label: 'allTime' },
+]
+
 const { t } = useI18n()
 
 const props = defineProps({
   compact: { type: Boolean, default: false }, // Home panel: top 5, no podium
 })
 const mode = ref('queen')
+const period = ref('weekly')
 const entries = ref([])
 const loading = ref(false)
 
 async function load() {
   loading.value = true
   try {
-    const data = await api.leaderboard(mode.value)
+    const data = await api.leaderboard(mode.value, period.value)
     entries.value = data.entries ?? []
   } finally {
     loading.value = false
@@ -28,11 +35,11 @@ async function load() {
 }
 
 onMounted(load)
-watch(mode, load)
+watch([mode, period], load)
 // a rename (or Google sign-in) from the header profile menu must show up
 // here without a page reload
 watch(playerIdentityVersion, load)
-defineExpose({ mode })
+defineExpose({ mode, period })
 
 const fmt = (n) => (n ?? 0).toLocaleString('en-US')
 
@@ -58,6 +65,19 @@ const rows = computed(() =>
       </button>
     </div>
 
+    <div class="tabs periods">
+      <button
+        v-for="p in PERIODS"
+        :key="p.id"
+        class="tab"
+        :class="{ on: period === p.id }"
+        @click="period = p.id"
+      >
+        {{ t(p.label) }}
+      </button>
+      <span v-if="period === 'weekly'" class="period-hint">{{ t('weeklyResets') }}</span>
+    </div>
+
     <p v-if="loading" class="loading">…</p>
 
     <div v-else-if="entries.length === 0" class="empty">
@@ -78,7 +98,7 @@ const rows = computed(() =>
           <span class="place">{{ e.rank }}</span>
           <TierAvatar :tier="e.tier" :src="e.picture" :name="e.nickname" :size="46" />
           <b class="pname">{{ e.nickname }}</b>
-          <span class="pexp num">{{ fmt(e.exp) }} EXP</span>
+          <span class="pexp num">{{ fmt(e.score) }} {{ t('pts') }}</span>
         </div>
       </div>
 
@@ -94,7 +114,7 @@ const rows = computed(() =>
               <span v-if="e.bestStreak" class="streak"><i>·</i> {{ t('streak') }} {{ e.bestStreak }}</span>
             </span>
           </span>
-          <span class="exp num">{{ fmt(e.exp) }}</span>
+          <span class="exp num" :title="t('score')">{{ fmt(e.score) }}</span>
         </li>
       </ol>
     </template>
@@ -121,6 +141,11 @@ const rows = computed(() =>
 }
 @media (hover: hover) { .tab:hover { color: var(--text); background: var(--surface-2); } }
 .tab.on { color: var(--accent); background: var(--accent-soft); border-color: rgba(246, 183, 60, 0.3); }
+
+/* weekly / all-time windows — a quieter row under the mode tabs */
+.periods { margin-top: -8px; align-items: center; }
+.periods .tab { padding: 6px 12px; font-size: 0.8rem; }
+.period-hint { font-size: 0.74rem; color: var(--text-mute); margin-left: 6px; }
 
 .empty {
   display: flex;

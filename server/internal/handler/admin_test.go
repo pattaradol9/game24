@@ -690,18 +690,18 @@ func TestAdminServerBoosts(t *testing.T) {
 		t.Fatalf("player exp boost = %v, want 2.5x", boost)
 	}
 
-	// a solved hand pays the multiplied EXP; coins stay on base points
+	// a solved hand pays the ×2.5-boosted EXP off the hand's own exp curve
+	// (no longer the score); coins stay on the unboosted base,
+	// floor(expBase/10), and the score is a separate level-multiplied figure
 	d := solveOneHand(t, mux, playerTok, "queen")
-	points, exp := d["points"].(float64), d["exp"].(float64)
-	if want := math.Round(points * 2.5); exp != want {
-		t.Fatalf("exp = %v, want %v (points %v)", exp, want, points)
+	exp := d["exp"].(float64)
+	if exp <= 0 {
+		t.Fatalf("exp = %v, want a positive payout", exp)
 	}
-	if exp <= points {
-		t.Fatalf("boosted exp %v must exceed base points %v", exp, points)
-	}
-	baseCoins := math.Floor(points / 10)
-	if coins := d["coins"].(float64); coins != baseCoins {
-		t.Fatalf("coins = %v, want %v (unboosted)", coins, baseCoins)
+	// coins = floor(expBase/10) pins the base to [10c, 10c+9], so a clean
+	// ×2.5 boost puts exp in [25c, 25c+23]
+	if c := d["coins"].(float64); exp < 25*c || exp > 25*c+23 {
+		t.Fatalf("exp = %v doesn't match ×2.5 of the coin-pinned base (coins %v)", exp, c)
 	}
 
 	// arm the coin boost too, next hand pays both multipliers
@@ -719,12 +719,15 @@ func TestAdminServerBoosts(t *testing.T) {
 		t.Fatalf("profile boosts = %v, want both kinds running", boosts)
 	}
 	d = solveOneHand(t, mux, playerTok, "queen")
-	points, exp = d["points"].(float64), d["exp"].(float64)
-	if want := math.Round(points * 2.5); exp != want {
-		t.Fatalf("exp = %v, want %v", exp, want)
+	exp = d["exp"].(float64)
+	// both boosts armed: coins must be a clean ×3 bucket, and the base it
+	// pins (coins/3 → [10·c/3, 10·c/3+9]) puts exp at ×2.5 of it
+	coins := d["coins"].(float64)
+	if coins <= 0 || math.Mod(coins, 3) != 0 {
+		t.Fatalf("coins = %v, want the unboosted floor × 3", coins)
 	}
-	if want := math.Floor(points/10) * 3; d["coins"].(float64) != want {
-		t.Fatalf("coins = %v, want %v (×3)", d["coins"], want)
+	if want := 25 * coins / 3; exp < want || exp > want+22.5 {
+		t.Fatalf("exp = %v doesn't match ×2.5 of the coin-pinned base (coins %v)", exp, coins)
 	}
 
 	// disabling stops the payouts and clears the profile's boost view
@@ -736,8 +739,13 @@ func TestAdminServerBoosts(t *testing.T) {
 		t.Fatal("boost still active after disable")
 	}
 	d = solveOneHand(t, mux, playerTok, "queen")
-	if d["exp"].(float64) != d["points"].(float64) {
-		t.Fatalf("exp after disable = %v, want base %v", d["exp"], d["points"])
+	exp = d["exp"].(float64)
+	// exp boost off: exp reads the hand's raw exp curve again; the coin boost
+	// still runs, so its bucket (coins/3 → base [10·c/3, 10·c/3+9]) pins exp
+	// to the same window, unmultiplied
+	coins = d["coins"].(float64)
+	if want := 10 * coins / 3; exp < want || exp > want+9 {
+		t.Fatalf("exp after disable = %v, want the unboosted curve (coins %v)", exp, coins)
 	}
 	code, res = get(t, mux, "/api/v1/me", playerTok)
 	boosts = data(res)["player"].(map[string]any)["boosts"].(map[string]any)

@@ -24,22 +24,23 @@ import (
 const maxItemCount = 200
 
 type itemJSON struct {
-	ID          string   `json:"id"`
-	Name        textJSON `json:"name"`
-	Desc        textJSON `json:"desc"`
-	Kind        string   `json:"kind"`
-	Multiplier  float64  `json:"multiplier"`
-	DurationMin int      `json:"durationMinutes"`
-	Price       int64    `json:"price"`
-	Rarity      string   `json:"rarity"`
+	ID           string   `json:"id"`
+	Name         textJSON `json:"name"`
+	Desc         textJSON `json:"desc"`
+	Kind         string   `json:"kind"`
+	Multiplier   float64  `json:"multiplier"`
+	DurationMin  int      `json:"durationMinutes"`
+	ExtraSeconds int      `json:"extraSeconds"` // time items: seconds one unit adds to a hand
+	Price        int64    `json:"price"`
+	Rarity       string   `json:"rarity"`
 }
 
 func toItemJSON(d items.Def) itemJSON {
 	return itemJSON{
 		ID: d.ID, Name: textJSON{En: d.Name.En, Th: d.Name.Th},
 		Desc: textJSON{En: d.Desc.En, Th: d.Desc.Th},
-		Kind: d.Kind, Multiplier: d.Multiplier, DurationMin: d.DurationMin, Price: d.Price,
-		Rarity: d.Rarity,
+		Kind: d.Kind, Multiplier: d.Multiplier, DurationMin: d.DurationMin,
+		ExtraSeconds: d.ExtraSeconds, Price: d.Price, Rarity: d.Rarity,
 	}
 }
 
@@ -136,6 +137,9 @@ func itemCount(r *http.Request) (int, bool, error) {
 // happened to the kind's window — "fresh", "extended" (same multiplier
 // stacked time) or "replaced" (a different multiplier took over) — `replaced`
 // mirrors it as a bool and `capped` flags a window end trimmed to the cap.
+// Time items (kind "time") are refused here: they never arm a window, the
+// round-extend path spends them mid-game instead. Skip items (kind "skip")
+// are the other play helper — the item-gated round-skip path spends them.
 func (a *API) useItem(w http.ResponseWriter, r *http.Request) {
 	p, _ := playerOf(r)
 	if p.IsGuest {
@@ -143,6 +147,16 @@ func (a *API) useItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
+	if def, ok := items.ByID(id); ok {
+		switch def.Kind {
+		case "time":
+			fail(w, http.StatusBadRequest, "time items extend the round timer and are used in game")
+			return
+		case "skip":
+			fail(w, http.StatusBadRequest, "skip items are spent by the in-game Skip button")
+			return
+		}
+	}
 	count, valid, err := itemCount(r)
 	if !valid {
 		fail(w, http.StatusBadRequest, err.Error())

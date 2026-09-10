@@ -24,6 +24,23 @@ var ErrInvalidCount = errors.New("store: invalid item count")
 // that only PARTLY fit are clamped at the cap instead (capped=true).
 var ErrBoostDurationCap = errors.New("store: boost window would exceed the 24h cap")
 
+// ErrRoundClosed marks a time extension arriving for a round that already
+// finished (expired, skipped or solved).
+var ErrRoundClosed = errors.New("store: round already finished")
+
+// ErrSessionExtendUsed marks a second time extension inside one play
+// session: the item may bail a hand out once per session, not once per hand.
+var ErrSessionExtendUsed = errors.New("store: time extension already used this session")
+
+// ErrRoundTimeFull marks a time extension arriving while the hand still has
+// its full window ahead: there is no room under the mode's base limit for
+// the item to fill, so nothing is added and nothing is consumed.
+var ErrRoundTimeFull = errors.New("store: round time already at this mode's limit")
+
+// ErrSessionSkipUsed marks a second item skip inside one play session: like
+// the time extension, the Skip Pass folds a hand once per session.
+var ErrSessionSkipUsed = errors.New("store: skip already used this session")
+
 // BoostWindowMax caps the combined remaining duration of one personal boost
 // kind. Same-multiplier activations stack time on top of each other, but a
 // kind can never run longer than 24h from now.
@@ -206,6 +223,193 @@ func (s *Store) UseItem(playerID, itemID string, count int) (ActiveBoost, string
 		"action": action, "count": count, "capped": capped,
 	}))
 	return ActiveBoost{Kind: kind, Multiplier: def.Multiplier, EndsAt: ends, ItemID: def.ID}, action, capped, nil
+}
+
+// ExtendRound is the solo play helper behind the Add-time button (and the
+// "time over?" dialog offering the same spend at zero): it spends ONE unit
+// of a time item (kind "time") to push an open round's countdown out by the
+// item's ExtraSeconds — pressable any time mid-play, but a hand's remaining
+// time may never pass the mode's base window, so the extra is clamped to the
+// seconds the hand has already played away on the server clock (a press at
+// 1:50 of a 2:00 hand tops up to 2:00, never past it) and a press with no
+// room at all is refused with ErrRoundTimeFull. The consumption and the
+// round update commit together. The once-per-session rule is enforced in the
+// same transaction: when any round of the same session id already carries
+// extra time, a second extension is refused (ErrSessionExtendUsed); rounds
+// played without a session id fall back to a per-round rule. Players without
+// the item in the bag get ErrNoItems — guests among them, since only Google
+// players can buy (called out explicitly with ErrGoogleRequired).
+func (s *Store) ExtendRound(playerID, roundID, itemID string) (Round, error) {
+	def, ok := items.ByID(itemID)
+	if !ok || def.Kind != "time" || def.ExtraSeconds <= 0 {
+		return Round{}, ErrNotFound
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Round{}, err
+	}
+	defer tx.Rollback()
+	var (
+		status, sessionID string
+		extendSec         int64
+		dealtAtStr        string
+		guest             bool
+	)
+	err = tx.QueryRow(`SELECT status, session_id, extend_sec, dealt_at FROM rounds WHERE id = ? AND player_id = ?`,
+		roundID, playerID).Scan(&status, &sessionID, &extendSec, &dealtAtStr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Round{}, ErrNotFound
+	}
+	if err != nil {
+		return Round{}, err
+	}
+	if status != "open" {
+		return Round{}, ErrRoundClosed
+	}
+	if sessionID != "" {
+		var n int64
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM rounds
+			WHERE player_id = ? AND session_id = ? AND extend_sec > 0`, playerID, sessionID).Scan(&n); err != nil {
+			return Round{}, err
+		}
+		if n > 0 {
+			return Round{}, ErrSessionExtendUsed
+		}
+	} else if extendSec > 0 {
+		return Round{}, ErrSessionExtendUsed
+	}
+	if err := tx.QueryRow(`SELECT is_guest FROM players WHERE id = ?`, playerID).Scan(&guest); err != nil {
+		return Round{}, err
+	}
+	if guest {
+		return Round{}, ErrGoogleRequired
+	}
+	res, err := tx.Exec(`UPDATE player_items SET qty = qty - 1 WHERE player_id = ? AND item_id = ? AND qty >= 1`,
+		playerID, itemID)
+	if err != nil {
+		return Round{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Round{}, ErrNoItems
+	}
+	// the countdown may only fill the room the hand has already played away:
+	// remaining time after the extension stays inside the mode's base window
+	extra := int64(def.ExtraSeconds)
+	dealtAt, err := time.Parse("2006-01-02 15:04:05", dealtAtStr)
+	if err != nil {
+		return Round{}, err
+	}
+	if played := int64(time.Since(dealtAt).Seconds()); played < extra {
+		extra = played
+	}
+	if extra <= 0 {
+		return Round{}, ErrRoundTimeFull
+	}
+	res, err = tx.Exec(`UPDATE rounds SET extend_sec = ? WHERE id = ? AND status = 'open'`, extra, roundID)
+	if err != nil {
+		return Round{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Round{}, ErrRoundClosed
+	}
+	if _, err := tx.Exec(`DELETE FROM player_items WHERE player_id = ? AND qty <= 0`, playerID); err != nil {
+		return Round{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Round{}, err
+	}
+	s.LogEvent("player:"+playerID, "item.use", itemID, mustJSON(map[string]any{
+		"roundId": roundID, "sessionId": sessionID, "extraSeconds": extra,
+	}))
+	return s.RoundByID(roundID, playerID)
+}
+
+// SkipRound is the play helper behind the Skip button: it spends ONE unit of
+// a skip item (kind "skip") to fold an open round — status "skipped", no
+// payout — and stamps rounds.skip_used in the same transaction so the
+// once-per-session rule can hold: when any round of the same session id
+// already carries the flag, a second skip is refused
+// (ErrSessionSkipUsed); rounds played without a session id fall back to a
+// per-round rule. Players without the item in the bag get ErrNoItems —
+// guests among them, since only Google players can buy (called out
+// explicitly with ErrGoogleRequired). A hand that merely expires folds for
+// free through the plain timeout path; only this item path skips mid-play.
+func (s *Store) SkipRound(playerID, roundID string) (Round, error) {
+	def, ok := items.SkipItem()
+	if !ok {
+		return Round{}, ErrNotFound
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return Round{}, err
+	}
+	defer tx.Rollback()
+	var (
+		status, sessionID string
+		skipUsed          int64
+		dealtAtStr        string
+		guest             bool
+	)
+	err = tx.QueryRow(`SELECT status, session_id, skip_used, dealt_at FROM rounds WHERE id = ? AND player_id = ?`,
+		roundID, playerID).Scan(&status, &sessionID, &skipUsed, &dealtAtStr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Round{}, ErrNotFound
+	}
+	if err != nil {
+		return Round{}, err
+	}
+	if status != "open" {
+		return Round{}, ErrRoundClosed
+	}
+	if sessionID != "" {
+		var n int64
+		if err := tx.QueryRow(`SELECT COUNT(*) FROM rounds
+			WHERE player_id = ? AND session_id = ? AND skip_used > 0`, playerID, sessionID).Scan(&n); err != nil {
+			return Round{}, err
+		}
+		if n > 0 {
+			return Round{}, ErrSessionSkipUsed
+		}
+	} else if skipUsed > 0 {
+		return Round{}, ErrSessionSkipUsed
+	}
+	if err := tx.QueryRow(`SELECT is_guest FROM players WHERE id = ?`, playerID).Scan(&guest); err != nil {
+		return Round{}, err
+	}
+	if guest {
+		return Round{}, ErrGoogleRequired
+	}
+	res, err := tx.Exec(`UPDATE player_items SET qty = qty - 1 WHERE player_id = ? AND item_id = ? AND qty >= 1`,
+		playerID, def.ID)
+	if err != nil {
+		return Round{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Round{}, ErrNoItems
+	}
+	dealtAt, err := time.Parse("2006-01-02 15:04:05", dealtAtStr)
+	if err != nil {
+		return Round{}, err
+	}
+	res, err = tx.Exec(`UPDATE rounds SET status = 'skipped', skip_used = 1, elapsed_ms = ?, finished_at = datetime('now')
+		WHERE id = ? AND status = 'open'`,
+		time.Since(dealtAt).Milliseconds(), roundID)
+	if err != nil {
+		return Round{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Round{}, ErrRoundClosed
+	}
+	if _, err := tx.Exec(`DELETE FROM player_items WHERE player_id = ? AND qty <= 0`, playerID); err != nil {
+		return Round{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Round{}, err
+	}
+	s.LogEvent("player:"+playerID, "item.use", def.ID, mustJSON(map[string]any{
+		"roundId": roundID, "sessionId": sessionID, "action": "skip",
+	}))
+	return s.RoundByID(roundID, playerID)
 }
 
 // ActivePlayerBoost returns the player's personal boost of the given kind to

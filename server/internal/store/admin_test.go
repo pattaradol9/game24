@@ -31,7 +31,7 @@ func TestBanBlocksAuthLoginAndLeaderboard(t *testing.T) {
 	if _, _, err := s.GoogleLogin("sub-ban", "a@b.c", "Banned", ""); !errors.Is(err, ErrBanned) {
 		t.Fatalf("banned google login err = %v, want ErrBanned", err)
 	}
-	board, err := s.Leaderboard("queen", 10, 0)
+	board, err := s.ScoreLeaderboard("queen", false, 10, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestBanBlocksAuthLoginAndLeaderboard(t *testing.T) {
 	if _, err = s.PlayerByToken(tok); err != nil {
 		t.Fatalf("token rejected after unban: %v", err)
 	}
-	board, _ = s.Leaderboard("queen", 10, 0)
+	board, _ = s.ScoreLeaderboard("queen", false, 10, 0)
 	if len(board) != 1 {
 		t.Fatalf("player missing from board after unban: %+v", board)
 	}

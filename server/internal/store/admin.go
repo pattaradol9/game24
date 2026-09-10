@@ -420,6 +420,9 @@ func (s *Store) ResetPlayerStats(actor, playerID, mode string) (Player, error) {
 		if _, err := tx.Exec(`DELETE FROM player_mode_stats WHERE player_id = ?`, playerID); err != nil {
 			return Player{}, err
 		}
+		if _, err := tx.Exec(`DELETE FROM player_scores WHERE player_id = ?`, playerID); err != nil {
+			return Player{}, err
+		}
 	} else {
 		res, err := tx.Exec(`DELETE FROM player_mode_stats WHERE player_id = ? AND mode = ?`, playerID, mode)
 		if err != nil {
@@ -427,6 +430,9 @@ func (s *Store) ResetPlayerStats(actor, playerID, mode string) (Player, error) {
 		}
 		if n, _ := res.RowsAffected(); n == 0 {
 			return Player{}, ErrNotFound
+		}
+		if _, err := tx.Exec(`DELETE FROM player_scores WHERE player_id = ? AND mode = ?`, playerID, mode); err != nil {
+			return Player{}, err
 		}
 	}
 	if err := syncTotalExp(tx, playerID); err != nil {

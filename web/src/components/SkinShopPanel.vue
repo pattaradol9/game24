@@ -226,7 +226,7 @@ defineExpose({ reload: load })
     </div>
 
     <!-- purchase confirmation: skin, price, and the balance that remains -->
-    <div v-if="confirming" class="overlay" @click.self="closeConfirm">
+    <div v-if="confirming" class="overlay">
       <div class="panel confirm" :class="'r-' + confirming.rarity" role="dialog" :aria-label="t('confirmBuy')">
         <span class="confirm-title">{{ t('confirmBuy') }}</span>
         <div class="confirm-target">
@@ -301,7 +301,7 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
 /* rarity palette shared with the item tabs. The tier dials scale the aura
    with prestige: --r-line tints the card border, --r-wash the corner wash,
    --r-haze the resting outer glow. */
-.r-common { --rc: var(--text-dim); --r-line: 22%; --r-wash: 12%; --r-haze: 8%; }
+.r-common { --rc: var(--rarity-common); --r-line: 22%; --r-wash: 12%; --r-haze: 8%; }
 .r-rare { --rc: var(--info); --r-line: 48%; --r-wash: 22%; --r-haze: 16%; }
 .r-epic { --rc: #b283f0; --r-line: 58%; --r-wash: 28%; --r-haze: 20%; }
 .r-legend { --rc: var(--accent); --r-line: 66%; --r-wash: 32%; --r-haze: 24%; }

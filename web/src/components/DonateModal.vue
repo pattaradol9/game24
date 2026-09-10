@@ -16,7 +16,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 </script>
 
 <template>
-  <div class="overlay" @click.self="emit('close')">
+  <div class="overlay">
     <div class="panel modal" role="dialog" aria-modal="true" :aria-label="t('donateTitle')">
       <button class="btn icon close" :aria-label="t('close')" @click="emit('close')">
         <AnimatedIcon name="close" :size="18" />

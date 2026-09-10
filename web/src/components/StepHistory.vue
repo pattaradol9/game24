@@ -1,11 +1,17 @@
 <script setup>
 import { useI18n } from '../i18n/index.js'
+import Icon from './Icon.vue'
 
 const { t } = useI18n()
 
 defineProps({
   history: { type: Array, default: () => [] },
+  // null hides the undo button entirely (views that keep undo elsewhere,
+  // e.g. the room screen); true/false shows it enabled/disabled
+  canUndo: { type: Boolean, default: null },
 })
+
+defineEmits(['undo'])
 </script>
 
 <template>
@@ -17,6 +23,16 @@ defineProps({
       </TransitionGroup>
       <p v-if="history.length === 0" class="empty">{{ t('noSteps') }}</p>
     </div>
+    <button
+      v-if="canUndo !== null"
+      class="undo-btn"
+      :disabled="!canUndo"
+      :title="canUndo ? '' : t('noSteps')"
+      data-test="undo-step"
+      @click="$emit('undo')"
+    >
+      <Icon name="undo" :size="16" />{{ t('undo') }}
+    </button>
   </div>
 </template>
 
@@ -28,6 +44,30 @@ defineProps({
   flex-direction: column;
   gap: 10px;
 }
+/* the step-rollback sits at the panel's bottom edge, full width and plainly
+   visible — the panel it acts on is its label */
+.undo-btn {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--text-dim);
+  border-radius: var(--r-sm);
+  padding: 9px 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: color 0.15s var(--ease), border-color 0.15s var(--ease);
+}
+@media (hover: hover) {
+  .undo-btn:hover:not(:disabled) { color: var(--text); border-color: var(--text-mute); }
+}
+.undo-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 .body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; overscroll-behavior: contain; }
 ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 li {

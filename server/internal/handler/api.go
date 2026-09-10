@@ -65,11 +65,11 @@ type modeStatJSON struct {
 // carry the item id, its bilingual name and rarity tier so the buff tray can
 // colour the chip by rarity and explain itself on hover.
 type boostSourceJSON struct {
-	Origin     string   `json:"origin"`
-	Multiplier float64  `json:"multiplier"`
-	EndsAt     string   `json:"endsAt"` // RFC3339, UTC
-	Item       string   `json:"item,omitempty"`
-	Rarity     string   `json:"rarity,omitempty"`
+	Origin     string    `json:"origin"`
+	Multiplier float64   `json:"multiplier"`
+	EndsAt     string    `json:"endsAt"` // RFC3339, UTC
+	Item       string    `json:"item,omitempty"`
+	Rarity     string    `json:"rarity,omitempty"`
 	Name       *textJSON `json:"name,omitempty"`
 }
 
@@ -320,7 +320,9 @@ func (a *API) Routes() chi.Router {
 		priv.Post("/rounds", a.createRound)
 		priv.Post("/rounds/{id}/submit", a.submitRound)
 		priv.Post("/rounds/{id}/skip", a.skipRound)
+		priv.Post("/rounds/{id}/timeout", a.timeoutRound)
 		priv.Post("/rounds/{id}/hint", a.hintRound)
+		priv.Post("/rounds/{id}/extend", a.extendRound)
 		priv.Post("/skins/{id}/buy", a.buySkin)
 		priv.Post("/skins/{id}/equip", a.equipSkin)
 		priv.Post("/items/{id}/buy", a.buyItem)
@@ -542,8 +544,10 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cfg, _ := game.Config(game.Mode(round.Mode))
+	// a time-extension item widens this hand's window: the expiry check and
+	// the remaining-time payout both count the seconds the item banked
 	elapsed := time.Since(round.DealtAt)
-	if elapsed > time.Duration(cfg.TimeLimitSec+10)*time.Second {
+	if elapsed > time.Duration(cfg.TimeLimitSec+int(round.ExtendSec)+10)*time.Second {
 		a.Store.FinishRound(round.ID, "expired", 0, elapsed.Milliseconds())
 		// no payout on an expired submit; the skip still counts toward
 		// achievements and will surface on the player's next fetch
@@ -557,17 +561,23 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnprocessableEntity, "wrong: "+err.Error())
 		return
 	}
-	remaining := int64(cfg.TimeLimitSec) - int64(elapsed.Seconds())
+	remaining := int64(cfg.TimeLimitSec+int(round.ExtendSec)) - int64(elapsed.Seconds())
 	if remaining < 0 {
 		remaining = 0
 	}
-	points := (10 + remaining) * int64(cfg.Multiplier)
-
+	// the hand's two currencies, deliberately different curves:
+	//   score — speed-heavy and level-multiplied, the session scoreboard
+	//   exp   — the progression payout: solving pays a solid base, speed
+	//           counts at half weight, the mode scales it, and the level
+	//           handicap does not compound it (coins follow the EXP, 10:1)
 	lvBefore := progress.LevelFromExp(p.TotalExp)
+	score := progress.ScoreForHand((10+remaining)*int64(cfg.Multiplier), lvBefore)
+	expBase := progress.ExpForHand(remaining, int64(cfg.Multiplier))
+
 	var coins, expEarned int64
 	var unlocked []achievementJSON
 	if !p.IsGuest {
-		res, freshUnlocked, err := a.Store.AwardSolve(p.ID, round.Mode, points, false)
+		res, freshUnlocked, err := a.Store.AwardSolve(p.ID, round.Mode, expBase, false)
 		if err != nil {
 			fail(w, http.StatusInternalServerError, err.Error())
 			return
@@ -578,7 +588,7 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 			unlocked = append(unlocked, toAchievementJSON(d))
 		}
 	}
-	a.Store.FinishRound(round.ID, "solved", points, elapsed.Milliseconds())
+	a.Store.FinishRound(round.ID, "solved", score, elapsed.Milliseconds())
 
 	fresh, err := a.Store.PlayerByToken(bearerToken(r))
 	if err != nil {
@@ -592,7 +602,7 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 	}
 	ok(w, map[string]any{
 		"expr":            game.ExprFromSteps(round.Numbers, body.Steps),
-		"points":          points,
+		"points":          score,
 		"exp":             expEarned, // what the hand banked, boost multiplier included
 		"coins":           coins,
 		"newAchievements": unlocked,
@@ -602,7 +612,70 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// skipRound is the item-gated escape hatch behind the Skip button: folding
+// an open hand mid-play spends ONE Skip Pass (kind "skip") and only one
+// fold per play session is allowed — the store enforces both inside the
+// consumption transaction. The hand finishes as "skipped" (no payout, skip
+// achievements still evaluated) and the response carries the solution plus
+// the fresh player JSON so every open tab sees the new bag count.
 func (a *API) skipRound(w http.ResponseWriter, r *http.Request) {
+	p, _ := playerOf(r)
+	roundID := chi.URLParam(r, "id")
+	skipped, err := a.Store.SkipRound(p.ID, roundID)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrGoogleRequired):
+			a.googleOnly(w)
+		case errors.Is(err, store.ErrNoItems):
+			fail(w, http.StatusBadRequest, "no skip item left in inventory")
+		case errors.Is(err, store.ErrSessionSkipUsed):
+			fail(w, http.StatusBadRequest, "skip already used this session")
+		case errors.Is(err, store.ErrRoundClosed):
+			fail(w, http.StatusConflict, "round already finished")
+		case errors.Is(err, store.ErrNotFound):
+			fail(w, http.StatusNotFound, "round not found")
+		default:
+			fail(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	var unlocked []achievementJSON
+	if !p.IsGuest {
+		if u, err := a.Store.AwardSkip(p.ID, skipped.Mode); err == nil {
+			for _, d := range u {
+				unlocked = append(unlocked, toAchievementJSON(d))
+			}
+		}
+	}
+	if unlocked == nil {
+		unlocked = []achievementJSON{}
+	}
+
+	sols := game.Solve(skipped.Numbers)
+	expr := ""
+	if len(sols) > 0 {
+		expr = sols[0].Expr
+	}
+	fresh, err := a.Store.PlayerByToken(bearerToken(r))
+	if err != nil {
+		fresh = p
+	}
+	// the bag count changed behind the player's other tabs
+	a.notifyPlayer(fresh)
+	ok(w, map[string]any{
+		"solution":        expr,
+		"newAchievements": unlocked,
+		"player":          a.toPlayerJSON(fresh),
+	})
+}
+
+// timeoutRound is the free end of the countdown: when a solo hand's clock
+// genuinely runs out the client folds it here instead of the item-gated
+// skip. The expiry is verified server-side against the dealt time (base
+// window + any extension), so it can never stand in for a mid-play skip —
+// only a truly dead hand folds for free. No payout either way; skip
+// achievements still evaluated.
+func (a *API) timeoutRound(w http.ResponseWriter, r *http.Request) {
 	p, _ := playerOf(r)
 	roundID := chi.URLParam(r, "id")
 	round, err := a.Store.RoundByID(roundID, p.ID)
@@ -616,6 +689,15 @@ func (a *API) skipRound(w http.ResponseWriter, r *http.Request) {
 	}
 	if round.Status != "open" {
 		fail(w, http.StatusConflict, "round already finished")
+		return
+	}
+	cfg, _ := game.Config(game.Mode(round.Mode))
+	// the client folds the hand the moment its countdown hits zero (an intro
+	// pause and network latency always keep elapsed past the base limit), so
+	// the base window itself is the fence — only the +10s SUBMIT grace stays
+	// exclusive to submits
+	if elapsed := time.Since(round.DealtAt); elapsed < time.Duration(cfg.TimeLimitSec+int(round.ExtendSec))*time.Second {
+		fail(w, http.StatusBadRequest, "time not up yet")
 		return
 	}
 	a.Store.FinishRound(round.ID, "skipped", 0, time.Since(round.DealtAt).Milliseconds())
@@ -641,6 +723,70 @@ func (a *API) skipRound(w http.ResponseWriter, r *http.Request) {
 		"solution":        expr,
 		"newAchievements": unlocked,
 		"player":          a.toPlayerJSON(fresh),
+	})
+}
+
+// extendRound is the play-helper behind the Add-time button: a solo player
+// holding a time item (kind "time") spends one unit to add the item's
+// ExtraSeconds to THIS hand — any time mid-play, not just at zero. The store
+// clamps the extra so the hand's remaining time never passes the mode's base
+// window (a press with the full window still ahead → 400, nothing consumed)
+// and enforces the once-per-session rule in the same transaction; the
+// response echoes the widened window (timeLimit = base + extra) and the
+// fresh player JSON so every open tab sees the new bag count.
+func (a *API) extendRound(w http.ResponseWriter, r *http.Request) {
+	p, _ := playerOf(r)
+	roundID := chi.URLParam(r, "id")
+	round, err := a.Store.RoundByID(roundID, p.ID)
+	if errors.Is(err, store.ErrNotFound) {
+		fail(w, http.StatusNotFound, "round not found")
+		return
+	}
+	if err != nil {
+		fail(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if round.Status != "open" {
+		fail(w, http.StatusConflict, "round already finished")
+		return
+	}
+	timeDef, haveTime := items.TimeItem()
+	if !haveTime {
+		fail(w, http.StatusServiceUnavailable, "no time item in catalog")
+		return
+	}
+	updated, err := a.Store.ExtendRound(p.ID, roundID, timeDef.ID)
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrGoogleRequired):
+			a.googleOnly(w)
+		case errors.Is(err, store.ErrNoItems):
+			fail(w, http.StatusBadRequest, "no time extension item left in inventory")
+		case errors.Is(err, store.ErrSessionExtendUsed):
+			fail(w, http.StatusBadRequest, "time extension already used this session")
+		case errors.Is(err, store.ErrRoundTimeFull):
+			fail(w, http.StatusBadRequest, "round time is already at this mode's limit")
+		case errors.Is(err, store.ErrRoundClosed):
+			fail(w, http.StatusConflict, "round already finished")
+		case errors.Is(err, store.ErrNotFound):
+			fail(w, http.StatusNotFound, "round not found")
+		default:
+			fail(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	cfg, _ := game.Config(game.Mode(updated.Mode))
+	fresh, err := a.Store.PlayerByToken(bearerToken(r))
+	if err != nil {
+		fresh = p
+	}
+	// the bag count changed behind the player's other tabs
+	a.notifyPlayer(fresh)
+	ok(w, map[string]any{
+		"roundId":      updated.ID,
+		"timeLimit":    cfg.TimeLimitSec + int(updated.ExtendSec),
+		"extraSeconds": updated.ExtendSec,
+		"player":       a.toPlayerJSON(fresh),
 	})
 }
 
@@ -695,15 +841,23 @@ func (a *API) hintRound(w http.ResponseWriter, r *http.Request) {
 
 // --- leaderboard ---
 
+// leaderboard ranks the gameplay-score ledger by HIGH SCORE: each entry's
+// score is the player's best single hand for the mode inside the window, not
+// a running sum. Score is separate from EXP/coins and payout boosts
+// (server-wide or personal items) never touch it, so the board reflects pure
+// play. period=weekly ranks hands solved in the current ISO week (since
+// Monday 00:00 UTC) and answers resetsAt; period=alltime (default) ranks
+// everything ever scored.
 func (a *API) leaderboard(w http.ResponseWriter, r *http.Request) {
 	mode := game.Mode(r.URL.Query().Get("mode"))
 	if _, err := game.Config(mode); err != nil {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	weekly := r.URL.Query().Get("period") == "weekly"
 	limit := queryInt(r, "limit", 50)
 	offset := queryInt(r, "offset", 0)
-	rows, err := a.Store.Leaderboard(string(mode), limit, offset)
+	rows, err := a.Store.ScoreLeaderboard(string(mode), weekly, limit, offset)
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
@@ -713,7 +867,7 @@ func (a *API) leaderboard(w http.ResponseWriter, r *http.Request) {
 		PlayerID    string `json:"playerId"`
 		Nickname    string `json:"nickname"`
 		Picture     string `json:"picture,omitempty"`
-		Exp         int64  `json:"exp"`
+		Score       int64  `json:"score"`
 		Level       int64  `json:"level"`
 		Tier        string `json:"tier"`
 		HandsSolved int64  `json:"handsSolved"`
@@ -721,15 +875,21 @@ func (a *API) leaderboard(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]rowJSON, 0, len(rows))
 	for i, row := range rows {
-		lv := progress.LevelFromExp(row.Exp)
+		lv := progress.LevelFromExp(row.TotalExp)
 		tier, _ := tierOf(lv, row.TierOverride)
 		out = append(out, rowJSON{
 			Rank: offset + i + 1, PlayerID: row.PlayerID, Nickname: row.Nickname, Picture: row.Picture,
-			Exp: row.Exp, Level: lv, Tier: tier,
+			Score: row.Score, Level: lv, Tier: tier,
 			HandsSolved: row.HandsSolved, BestStreak: row.BestStreak,
 		})
 	}
-	ok(w, map[string]any{"entries": out})
+	res := map[string]any{"entries": out, "period": "alltime"}
+	if weekly {
+		res["period"] = "weekly"
+		// the window closes when the next ISO week begins
+		res["resetsAt"] = store.WeekStartUTC(time.Now()).AddDate(0, 0, 7).UTC().Format(time.RFC3339)
+	}
+	ok(w, res)
 }
 
 // --- rooms ---

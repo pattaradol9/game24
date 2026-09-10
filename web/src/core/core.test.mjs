@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { frac, int, apply, format, is24 } from './fraction.js'
 import { newHand, pickCard, setOperator, undo } from './checker.js'
-import { expForLevel, levelFromExp, tierFromLevel, singleHintQuota, levelProgress, tierBonusQuota } from './progress.js'
+import { expForLevel, levelFromExp, tierFromLevel, singleHintQuota, levelProgress, tierBonusQuota, scoreMultiplier, MAX_LEVEL } from './progress.js'
 
 test('fraction: 5 * (5 - 1/5) = 24', () => {
   const one5th = apply('/', int(1), int(5))
@@ -110,6 +110,38 @@ test('checker: merged card lands at the midpoint of its pair', () => {
   assert.deepEqual(spread.cards.map((c) => c.display), ['2', '10', '12', '4'])
 })
 
+test('checker: hand state survives a JSON round-trip (refresh resume)', () => {
+  const hand = newHand([6, 2, 9, 4])
+  pickCard(hand, hand.cards[0])
+  setOperator(hand, '*')
+  pickCard(hand, hand.cards[1])
+  assert.equal(hand.cards.length, 3)
+  // the refresh snapshot stores the hand as plain JSON and replays it —
+  // the revived state must be identical and keep playing (undo included)
+  const revived = JSON.parse(JSON.stringify(hand))
+  assert.deepEqual(revived, hand)
+  undo(revived)
+  assert.equal(revived.cards.length, 4)
+  assert.equal(revived.steps.length, 0)
+})
+
+test('checker: revived selection re-links by id, merges still collapse', () => {
+  const hand = newHand([6, 2, 9, 4])
+  pickCard(hand, hand.cards[0])
+  const revived = JSON.parse(JSON.stringify(hand))
+  // references don't survive JSON: re-link the selection into cards by id
+  revived.selection = revived.cards.find((c) => c.id === revived.selection.id)
+  // tapping the picked card again must cancel it, not duplicate a card
+  pickCard(revived, revived.selection)
+  assert.equal(revived.selection, null)
+  assert.equal(revived.cards.length, 4)
+  // and a full merge still collapses to three cards
+  pickCard(revived, revived.cards[0])
+  setOperator(revived, '*')
+  pickCard(revived, revived.cards[1])
+  assert.equal(revived.cards.length, 3)
+})
+
 test('progress: level curve matches server', () => {
   assert.equal(expForLevel(100), 297000)
   assert.equal(levelFromExp(0), 1)
@@ -117,6 +149,22 @@ test('progress: level curve matches server', () => {
   assert.equal(levelFromExp(60), 2)
   assert.equal(levelFromExp(296999), 99)
   assert.equal(levelFromExp(297000), 100)
+})
+
+test('progress: level caps at 100', () => {
+  assert.equal(MAX_LEVEL, 100)
+  assert.equal(levelFromExp(1e9), 100)
+  // at the cap the ladder ends: forNext reads 0 so the bar renders full
+  assert.deepEqual(levelProgress(297000), { lv: 100, into: 0, forNext: 0 })
+  assert.deepEqual(levelProgress(297000 + 5000), { lv: 100, into: 5000, forNext: 0 })
+})
+
+test('progress: score multiplier +5% per level, capped', () => {
+  assert.equal(scoreMultiplier(1), 1)
+  assert.equal(scoreMultiplier(11), 1.5)
+  assert.equal(scoreMultiplier(100), 5.95)
+  assert.equal(scoreMultiplier(250), 5.95) // past the cap: clamped
+  assert.equal(scoreMultiplier(0), 1)
 })
 
 test('progress: tier ladder every 20 levels', () => {

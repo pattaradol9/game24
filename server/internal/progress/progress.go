@@ -2,6 +2,11 @@ package progress
 
 import "math"
 
+// MaxLevel caps the level ladder for now: EXP past the cap still banks and
+// shows on the bar, but the level itself never climbs past 100 (the top of
+// the tier table, and the level-100 "Master of 24" achievement).
+const MaxLevel = 100
+
 // ExpForLevel returns the cumulative EXP required to reach level n (n >= 1).
 func ExpForLevel(n int64) int64 {
 	if n < 1 {
@@ -10,7 +15,8 @@ func ExpForLevel(n int64) int64 {
 	return 30 * (n - 1) * n
 }
 
-// LevelFromExp maps total EXP to a level, always at least 1.
+// LevelFromExp maps total EXP to a level, always at least 1, never past
+// MaxLevel.
 func LevelFromExp(exp int64) int64 {
 	if exp < 0 {
 		exp = 0
@@ -29,6 +35,9 @@ func LevelFromExp(exp int64) int64 {
 	}
 	if n < 1 {
 		n = 1
+	}
+	if n > MaxLevel {
+		n = MaxLevel
 	}
 	return n
 }
@@ -90,10 +99,47 @@ func TierBonusQuota(tier int) int {
 	return tier / 2
 }
 
-// LevelProgress describes progress from level lv to lv+1.
+// LevelProgress describes progress from level lv to lv+1. At the cap the
+// ladder ends: expForNext reads 0 so the bar renders full.
 func LevelProgress(exp int64) (lv int64, expInto, expForNext int64) {
 	lv = LevelFromExp(exp)
 	base := ExpForLevel(lv)
+	if lv >= MaxLevel {
+		return lv, exp - base, 0
+	}
 	next := ExpForLevel(lv + 1)
 	return lv, exp - base, next - base
+}
+
+// ScoreMultiplier is the level handicap on a solved hand's score: +5% per
+// level above the first, so a Lv.100 veteran banks 5.95× what a fresh face
+// does. Display-facing helper pairing with ScoreForHand.
+func ScoreMultiplier(lv int64) float64 {
+	return 1 + 0.05*float64(clampLevel(lv)-1)
+}
+
+// ScoreForHand multiplies a solved hand's base score by the level handicap.
+// Deterministic, applied server-side where the score is computed; the score
+// is the session scoreboard figure only — EXP pays from its own curve below.
+func ScoreForHand(base, lv int64) int64 {
+	return int64(math.Round(float64(base) * ScoreMultiplier(lv)))
+}
+
+// ExpForHand is a solved hand's EXP payout base, deliberately a different
+// curve from the score: solving pays a solid flat base, speed counts at half
+// weight, the mode scales it — and the level handicap does NOT compound it
+// (levels already raise the score; letting them raise EXP too would make
+// progression feed itself). Coins follow this figure, 10:1.
+func ExpForHand(remaining, modeMult int64) int64 {
+	return int64(math.Round((8 + float64(remaining)/2) * float64(modeMult)))
+}
+
+func clampLevel(lv int64) int64 {
+	if lv < 1 {
+		return 1
+	}
+	if lv > MaxLevel {
+		return MaxLevel
+	}
+	return lv
 }
