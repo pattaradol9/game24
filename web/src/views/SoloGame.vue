@@ -298,47 +298,47 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
           @op="game.setOperator"
         />
         <div v-else class="loading">{{ phase === 'loading' ? '…' : '' }}</div>
+      </div>
 
-        <div class="actions">
-          <div class="helper">
-            <button class="btn" :disabled="phase !== 'playing' || paused || !!extendOffer || (hintLeft ?? 0) <= 0" @click="game.hint">
-              <Icon name="bulb" :size="17" />{{ t('solution') }}
-            </button>
-            <span v-if="hintSpent" class="gate" :title="t('hintsSpent')" @click="refuse('hint', t('hintsSpent'), $event)" />
-            <Transition name="whypop">
-              <span v-if="refused === 'hint'" class="why" role="status">{{ refuseMsg }}</span>
-            </Transition>
-          </div>
-          <div class="helper">
-            <button
-              class="btn"
-              :disabled="!canExtend"
-              :title="extendHint"
-              data-test="add-time"
-              @click="onAddTime"
-            >
-              <Icon name="hourglass" :size="17" />{{ t('addTime') }}
-            </button>
-            <span v-if="extendSpent" class="gate" :title="extendHint" @click="refuse('extend', extendHint, $event)" />
-            <Transition name="whypop">
-              <span v-if="refused === 'extend'" class="why" role="status">{{ refuseMsg }}</span>
-            </Transition>
-          </div>
-          <div class="helper">
-            <button
-              class="btn danger"
-              :disabled="!canSkip"
-              :title="canSkip ? '' : skipHint"
-              data-test="skip-hand"
-              @click="game.skip"
-            >
-              <Icon name="skip" :size="17" />{{ t('skip') }}
-            </button>
-            <span v-if="skipSpent" class="gate" :title="skipHint" @click="refuse('skip', skipHint, $event)" />
-            <Transition name="whypop">
-              <span v-if="refused === 'skip'" class="why" role="status">{{ refuseMsg }}</span>
-            </Transition>
-          </div>
+      <div class="actions">
+        <div class="helper">
+          <button class="btn" :disabled="phase !== 'playing' || paused || !!extendOffer || (hintLeft ?? 0) <= 0" @click="game.hint">
+            <Icon name="bulb" :size="17" />{{ t('solution') }}
+          </button>
+          <span v-if="hintSpent" class="gate" :title="t('hintsSpent')" @click="refuse('hint', t('hintsSpent'), $event)" />
+          <Transition name="whypop">
+            <span v-if="refused === 'hint'" class="why" role="status">{{ refuseMsg }}</span>
+          </Transition>
+        </div>
+        <div class="helper">
+          <button
+            class="btn"
+            :disabled="!canExtend"
+            :title="extendHint"
+            data-test="add-time"
+            @click="onAddTime"
+          >
+            <Icon name="hourglass" :size="17" />{{ t('addTime') }}
+          </button>
+          <span v-if="extendSpent" class="gate" :title="extendHint" @click="refuse('extend', extendHint, $event)" />
+          <Transition name="whypop">
+            <span v-if="refused === 'extend'" class="why" role="status">{{ refuseMsg }}</span>
+          </Transition>
+        </div>
+        <div class="helper">
+          <button
+            class="btn danger"
+            :disabled="!canSkip"
+            :title="canSkip ? '' : skipHint"
+            data-test="skip-hand"
+            @click="game.skip"
+          >
+            <Icon name="skip" :size="17" />{{ t('skip') }}
+          </button>
+          <span v-if="skipSpent" class="gate" :title="skipHint" @click="refuse('skip', skipHint, $event)" />
+          <Transition name="whypop">
+            <span v-if="refused === 'skip'" class="why" role="status">{{ refuseMsg }}</span>
+          </Transition>
         </div>
       </div>
 
@@ -468,7 +468,6 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 10px;
-  margin-top: 16px;
 }
 /* each helper owns its reason bubble: a transparent gate lies over the dark
    button so a press is catchable (a disabled button swallows clicks) */
@@ -568,7 +567,6 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
     right: 12px;
     bottom: calc(12px + env(safe-area-inset-bottom));
     z-index: 50;
-    margin-top: 0;
   }
   .toast { bottom: calc(76px + env(safe-area-inset-bottom)); }
 }
