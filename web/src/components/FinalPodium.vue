@@ -8,6 +8,8 @@ const { t } = useI18n()
 const props = defineProps({
   show: { type: Boolean, default: false },
   standings: { type: Array, default: () => [] },
+  // the match ended because the host left: say so under the title
+  hostLeft: { type: Boolean, default: false },
 })
 defineEmits(['home'])
 
@@ -22,6 +24,7 @@ const order = computed(() => {
     <div class="panel modal">
       <CrownMark :size="68" />
       <h2>{{ t('finalResult') }}</h2>
+      <p v-if="hostLeft" class="host-note">{{ t('hostLeftNote') }}</p>
       <div class="podium">
         <div v-for="(col, name) in order" :key="name" class="col">
           <template v-if="col">
@@ -70,6 +73,7 @@ const order = computed(() => {
   animation: rise-in 0.26s var(--ease);
 }
 h2 { font-size: 1.25rem; font-weight: 500; }
+.host-note { margin-top: -10px; font-size: 0.85rem; line-height: 1.45; color: var(--text-mute); }
 .podium { display: flex; align-items: flex-end; justify-content: center; gap: 10px; width: 100%; }
 .col { display: flex; flex-direction: column; align-items: center; gap: 6px; flex: 1; min-width: 0; }
 .pname { font-size: 0.88rem; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -448,17 +448,22 @@ func (s *Store) ActivePlayerBoosts(playerID string) map[BoostKind]ActiveBoost {
 	return out
 }
 
-// payoutMultiplier stacks every boost source of a kind additively on top of
-// the base payout: each source contributes its bonus (multiplier − 1), so a
-// ×2 server boost plus a ×2 personal item pay ×3 total — never the compounded
-// ×4. Both lookups happen before the award transaction opens.
-func (s *Store) payoutMultiplier(playerID string, kind BoostKind) float64 {
+// payoutMultiplier stacks boost sources of a kind additively on top of the
+// base payout: each source contributes its bonus (multiplier − 1), so a ×2
+// server boost plus a ×2 personal item pay ×3 total — never the compounded
+// ×4. The server-wide campaign always counts; the player's own items only
+// enter when personal is true — multiplayer round wins pass false so every
+// seat's payout stays on equal footing (the server boost still applies to
+// everyone alike). Both lookups happen before the award transaction opens.
+func (s *Store) payoutMultiplier(playerID string, kind BoostKind, personal bool) float64 {
 	total := 1.0
 	if b, ok := s.ActiveBoost(kind); ok {
 		total += b.Multiplier - 1
 	}
-	if b, ok := s.ActivePlayerBoost(playerID, kind); ok {
-		total += b.Multiplier - 1
+	if personal {
+		if b, ok := s.ActivePlayerBoost(playerID, kind); ok {
+			total += b.Multiplier - 1
+		}
 	}
 	return total
 }

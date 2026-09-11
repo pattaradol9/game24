@@ -75,7 +75,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        // `make dev` hits the local API on :8080; the E2E suite points the
+        // same dev server at its isolated instance through VITE_API_TARGET
+        target: process.env.VITE_API_TARGET || 'http://localhost:8080',
         ws: true,
       },
     },

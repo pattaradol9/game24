@@ -9,13 +9,17 @@ defineProps({
   // null hides the undo button entirely (views that keep undo elsewhere,
   // e.g. the room screen); true/false shows it enabled/disabled
   canUndo: { type: Boolean, default: null },
+  // horizontal renders the slim strip variant used in the room's board
+  // column: steps flow left-to-right and the undo button pins the far
+  // right end; the default stacks lines vertically in a side panel
+  horizontal: { type: Boolean, default: false },
 })
 
 defineEmits(['undo'])
 </script>
 
 <template>
-  <div class="panel history">
+  <div class="panel history" :class="{ strip: horizontal }">
     <h3 class="section-title">{{ t('steps') }}</h3>
     <div class="body">
       <TransitionGroup name="line" tag="ol">
@@ -95,4 +99,23 @@ li:last-child { border-bottom: none; color: var(--text); }
 }
 .empty { margin: auto; color: var(--text-mute); font-size: 0.84rem; }
 .line-enter-active { animation: rise-in 0.22s var(--ease); }
+
+/* horizontal strip variant: one slim row under the board — steps flow as
+   chips, latest one bright, undo pinned to the far right end */
+.strip { flex-direction: row; align-items: center; gap: 12px; min-height: 0; padding: 10px 14px; }
+.strip h3 { flex: none; }
+.strip .body { flex-direction: row; align-items: center; overflow-x: auto; overflow-y: hidden; }
+.strip ol { flex-direction: row; align-items: center; gap: 8px; }
+.strip li {
+  flex: none;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  white-space: nowrap;
+}
+.strip .empty { margin: 0; }
+.strip .undo-btn { width: auto; margin-left: auto; }
 </style>

@@ -28,19 +28,28 @@ type Info struct {
 }
 
 type player struct {
-	id         string
-	name       string
-	dbID       string
-	level      int64
-	tier       string
-	score      int64
-	wins       int
-	hintsLeft  int
-	regensLeft int
-	conn       Conn
-	absent     bool   // socket dropped; seat held warm through playerGrace
-	absentSeq  int    // bumped per absence so stale drop timers no-op
-	resumeKey  string // secret letting the same browser reattach this seat
+	id              string
+	name            string
+	dbID            string
+	level           int64
+	tier            string
+	score           int64
+	wins            int
+	hintsLeft       int
+	extendsLeft     int
+	regensLeft      int
+	hintRoundNo     int // round each helper was last spent in: one use per
+	extendRoundNo   int // round per seat, on top of the per-match quota
+	regenRoundNo    int
+	solvedRoundNo   int   // round the seat solved; 0 = not solved this round
+	solveOrder      int   // which seat solved it: 1st, 2nd, … within the round
+	timedOutRoundNo int   // round whose own clock ran out on the seat
+	roundPoints     int64 // points the current round's solve paid the seat
+	conn            Conn
+	absent          bool      // socket dropped; seat held warm through playerGrace
+	absentSeq       int       // bumped per absence so stale drop timers no-op
+	resumeKey       string    // secret letting the same browser reattach this seat
+	extendEndsAt    time.Time // private deadline while a time extension is live
 }
 
 type stateView struct {
@@ -53,17 +62,23 @@ type stateView struct {
 }
 
 type playerView struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Guest      bool   `json:"guest"`
-	Level      int64  `json:"level"`
-	Tier       string `json:"tier"`
-	Score      int64  `json:"score"`
-	Wins       int    `json:"wins"`
-	HintsLeft  int    `json:"hintsLeft"`
-	RegensLeft int    `json:"regensLeft"`
-	Host       bool   `json:"host"`
-	Absent     bool   `json:"absent"` // socket dropped, seat held warm
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Guest       bool   `json:"guest"`
+	Level       int64  `json:"level"`
+	Tier        string `json:"tier"`
+	Score       int64  `json:"score"`
+	Wins        int    `json:"wins"`
+	HintsLeft   int    `json:"hintsLeft"`
+	ExtendsLeft int    `json:"extendsLeft"`
+	RegensLeft  int    `json:"regensLeft"`
+	Solved      bool   `json:"solved"` // solved the current round
+	SolveOrder  int    `json:"solveOrder,omitempty"`
+	TimedOut    bool   `json:"timedOut"` // own clock ran out this round
+	Gained      int64  `json:"gained,omitempty"`
+	Rank        int    `json:"rank,omitempty"` // podium place, stamped on the final standings only
+	Host        bool   `json:"host"`
+	Absent      bool   `json:"absent"` // socket dropped, seat held warm
 }
 
 type Room struct {
@@ -82,9 +97,8 @@ type Room struct {
 	numbers              map[string][]int // session id -> active hand (shared or regenerated)
 	sharedNumbers        []int
 	deadline             time.Time
-	summaryDur           time.Duration
 	roundOver            bool
-	solvedBy             string
+	solvedCount          int // seats that solved the current round, so far
 	gen                  int
 	rnd                  *rand.Rand
 	removedCallback      func(code string)
@@ -99,20 +113,23 @@ const (
 	StateSummary  = "summary"
 	StateFinished = "finished"
 
-	summarySeconds = 6 // default pause between rounds
+	extendSeconds = 30 // seconds one Add-time use adds to a seat's private clock
+
+	// maxPlayers caps a room's seats. Checked on fresh joins only — resume
+	// reattaches and reclaiming seats never grow the roster.
+	maxPlayers = 10
 )
 
 func newRoom(code, hostKey string, cfg Config, award AwardEXP) *Room {
 	return &Room{
-		code:       code,
-		cfg:        cfg,
-		award:      award,
-		hostKey:    hostKey,
-		players:    map[string]*player{},
-		numbers:    map[string][]int{},
-		state:      StateLobby,
-		rnd:        rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 24)),
-		summaryDur: summarySeconds * time.Second,
+		code:    code,
+		cfg:     cfg,
+		award:   award,
+		hostKey: hostKey,
+		players: map[string]*player{},
+		numbers: map[string][]int{},
+		state:   StateLobby,
+		rnd:     rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 24)),
 	}
 }
 
@@ -160,8 +177,9 @@ func cfgRounds(c Config) int { return c.Rounds }
 // carrying a valid resume secret reattaches the caller's existing seat —
 // same id, score and quotas — so a page refresh never churns the room
 // for everyone else. Returns the seat id that now owns the connection:
-// the fresh session id, or the reattached seat's original one.
-func (r *Room) Join(info Info, conn Conn) string {
+// the fresh session id, or the reattached seat's original one. Fresh
+// joins are refused once the room holds maxPlayers seats.
+func (r *Room) Join(info Info, conn Conn) (string, error) {
 	r.mu.Lock()
 
 	// a resume secret identifies the returning browser's own seat
@@ -173,6 +191,21 @@ func (r *Room) Join(info Info, conn Conn) string {
 				break
 			}
 		}
+	}
+
+	// the host returning on a brand-new session retires their lingering
+	// absent seat first, so the freed slot counts against capacity
+	if p == nil && r.hostID != "" && info.HostKey != "" && info.HostKey == r.hostKey {
+		if old, ok := r.players[r.hostID]; ok && old.absent {
+			delete(r.players, old.id)
+			delete(r.numbers, old.id)
+			r.removeFromOrderLocked(old.id)
+		}
+	}
+	// fresh seats only: a full room refuses everyone else
+	if p == nil && len(r.players) >= maxPlayers {
+		r.mu.Unlock()
+		return "", fmt.Errorf("room is full (max %d players)", maxPlayers)
 	}
 
 	first := r.connectedLocked() == 0
@@ -190,20 +223,16 @@ func (r *Room) Join(info Info, conn Conn) string {
 		p = &player{
 			id: info.SessionID, name: info.Name, dbID: info.DBID,
 			level: info.Level, tier: info.Tier, conn: conn,
-			hintsLeft: r.cfg.HintQuota, regensLeft: r.cfg.RegenQuota,
-			resumeKey: newSecret(24),
+			hintsLeft: r.cfg.HintQuota, extendsLeft: r.cfg.ExtendQuota,
+			regensLeft: r.cfg.RegenQuota,
+			resumeKey:  newSecret(24),
 		}
 		r.players[p.id] = p
 		r.joinOrder = append(r.joinOrder, p.id)
-		claimsHost := r.hostID == "" || (info.HostKey != "" && info.HostKey == r.hostKey)
-		if claimsHost {
-			// the host is back on a brand-new session: retire their
-			// lingering absent seat so no ghost chip stays behind
-			if old, ok := r.players[r.hostID]; ok && old.id != p.id && old.absent {
-				delete(r.players, old.id)
-				delete(r.numbers, old.id)
-				r.removeFromOrderLocked(old.id)
-			}
+		if r.hostID == "" {
+			r.hostID = p.id
+			isHostSeat = true
+		} else if info.HostKey != "" && info.HostKey == r.hostKey {
 			r.hostID = p.id
 			isHostSeat = true
 		}
@@ -227,13 +256,23 @@ func (r *Room) Join(info Info, conn Conn) string {
 			hand = r.sharedNumbers
 			r.numbers[p.id] = hand
 		}
-		welcome["round"] = map[string]any{
-			"roundNo":   r.roundNo,
-			"total":     r.cfg.Rounds,
-			"numbers":   hand,
-			"endsAt":    r.deadline.UnixMilli(),
-			"timeLimit": game.MustConfig(r.cfg.Mode).TimeLimitSec,
+		round := map[string]any{
+			"roundNo":    r.roundNo,
+			"total":      r.cfg.Rounds,
+			"numbers":    hand,
+			"endsAt":     r.deadline.UnixMilli(),
+			"timeLimit":  game.MustConfig(r.cfg.Mode).TimeLimitSec,
+			"hintUsed":   p.hintRoundNo == r.roundNo,
+			"extendUsed": p.extendRoundNo == r.roundNo,
+			"regenUsed":  p.regenRoundNo == r.roundNo,
 		}
+		// a live private extension survives the refresh: the seat re-arms
+		// its own widened clock instead of the shared one
+		if p.extendEndsAt.After(r.deadline) {
+			round["extendEndsAt"] = p.extendEndsAt.UnixMilli()
+			round["extraSeconds"] = int(p.extendEndsAt.Sub(r.deadline).Seconds())
+		}
+		welcome["round"] = round
 	}
 	r.mu.Unlock()
 
@@ -256,7 +295,7 @@ func (r *Room) Join(info Info, conn Conn) string {
 	}
 	r.sendState()
 	r.sendTo(p.id, "welcome", welcome)
-	return p.id
+	return p.id, nil
 }
 
 // Leave drops a connection. The seat stays warm through the reconnect
@@ -348,23 +387,72 @@ func (r *Room) removeFromOrderLocked(id string) {
 
 // Shutdown notifies everyone still inside that the room is over (the host
 // is gone for good) and tears the connections down. The hub calls it once
-// the reconnect grace has elapsed.
+// the reconnect grace has elapsed: a match still standing ends into the
+// final podium, a bare lobby closes with the plain notice.
 func (r *Room) Shutdown() {
 	r.mu.Lock()
+	typ, data := r.endByHostLeftLocked()
+	conns := r.liveConnsLocked()
+	r.mu.Unlock()
+	r.seal(conns, typ, data)
+}
+
+// HostLeft is the host's explicit goodbye (the leave message — a refresh
+// or a dropped socket never sends it): the match ends for every seat at
+// once, with the same final podium a natural finish would hand out. A
+// member's goodbye keeps the warm-seat flow and reports false. The caller
+// must drop the room from the hub so joins fail from here on.
+func (r *Room) HostLeft(sessionID string) bool {
+	r.mu.Lock()
+	if sessionID != r.hostID {
+		r.mu.Unlock()
+		return false
+	}
+	typ, data := r.endByHostLeftLocked()
+	conns := r.liveConnsLocked()
+	r.mu.Unlock()
+	r.seal(conns, typ, data)
+	return true
+}
+
+// endByHostLeftLocked freezes the match where it stands once the host is
+// gone for good: a match still standing becomes the final podium
+// (match_end, reason host_left), a bare lobby closes outright, and an
+// already-finished match needs no second announcement. Returns the goodbye
+// message to seal the room with. The lock must be held.
+func (r *Room) endByHostLeftLocked() (string, map[string]any) {
+	if r.roundNo == 0 || r.state == StateFinished {
+		return "room_closed", map[string]any{"reason": "host left"}
+	}
+	r.state = StateFinished
+	r.roundOver = true
+	return "match_end", map[string]any{
+		"standings": r.rankedStandingsLocked(),
+		"reason":    "host_left",
+	}
+}
+
+// liveConnsLocked snapshots every connected socket. The lock must be held.
+func (r *Room) liveConnsLocked() []Conn {
 	conns := make([]Conn, 0, len(r.players))
 	for _, p := range r.players {
 		if p.conn != nil {
 			conns = append(conns, p.conn)
 		}
 	}
-	raw, _ := json.Marshal(map[string]any{
-		"type": "room_closed",
-		"data": map[string]any{"reason": "host left"},
-	})
+	return conns
+}
+
+// seal delivers one last message to the sockets and cuts them once it has
+// flushed — the shared tail of every host-left teardown.
+func (r *Room) seal(conns []Conn, typ string, data map[string]any) {
+	raw, err := json.Marshal(map[string]any{"type": typ, "data": data})
+	if err != nil {
+		return
+	}
 	for _, c := range conns {
 		c.Deliver(raw)
 	}
-	r.mu.Unlock()
 	// give the writer pumps a beat to flush the notice before cutting
 	time.AfterFunc(100*time.Millisecond, func() {
 		for _, c := range conns {
@@ -384,27 +472,18 @@ func (r *Room) Start(sessionID string) error {
 		r.mu.Unlock()
 		return fmt.Errorf("match already started")
 	}
-	r.state = StateRound
 	r.roundNo = 0
-	r.mu.Unlock()
-	r.nextRound()
+	r.dealRoundLocked()
 	return nil
 }
 
-// nextRound advances to the next round or finishes the match.
-func (r *Room) nextRound() {
-	r.mu.Lock()
+// dealRoundLocked deals the next round of the match. The room lock must be
+// held on entry and is released on the way out, where the round_start
+// broadcast goes out and the round's expiry timer arms itself.
+func (r *Room) dealRoundLocked() {
 	r.gen++
 	g := r.gen
 	r.roundNo++
-	if r.roundNo > r.cfg.Rounds {
-		r.state = StateFinished
-		r.roundOver = true
-		standings := r.standingsLocked()
-		r.mu.Unlock()
-		r.broadcast("match_end", map[string]any{"standings": standings})
-		return
-	}
 	hand, err := game.Deal(r.cfg.Mode, r.rnd)
 	if err != nil {
 		r.mu.Unlock()
@@ -416,9 +495,18 @@ func (r *Room) nextRound() {
 	for id := range r.players {
 		r.numbers[id] = hand
 	}
+	// an extension buys extra seconds for one round only; the per-round
+	// solve marks and the per-match quota counters behave like the clock:
+	// the deadline resets, everything else carries over
+	for _, p := range r.players {
+		p.extendEndsAt = time.Time{}
+		p.roundPoints = 0
+		p.solveOrder = 0
+		p.timedOutRoundNo = 0
+	}
+	r.solvedCount = 0
 	r.deadline = time.Now().Add(time.Duration(game.MustConfig(r.cfg.Mode).TimeLimitSec) * time.Second)
 	r.roundOver = false
-	r.solvedBy = ""
 	r.state = StateRound
 	start := map[string]any{
 		"roundNo":   r.roundNo,
@@ -433,26 +521,101 @@ func (r *Room) nextRound() {
 	time.AfterFunc(time.Until(r.deadline), func() { r.expire(g) })
 }
 
-// expire closes the round with no winner.
+// expire closes the round once every seat is done — solved, or their own
+// clock ran out. Private clocks die at different times (each seat's
+// extension is its own), so each fire settles the seats whose deadline just
+// passed and reschedules itself to the earliest still-live clock until the
+// round is decided.
 func (r *Room) expire(g int) {
 	r.mu.Lock()
 	if r.gen != g || r.roundOver || r.state != StateRound {
 		r.mu.Unlock()
 		return
 	}
+	if !r.settleRoundLocked() {
+		next := r.nextDeadlineLocked()
+		r.mu.Unlock()
+		time.AfterFunc(time.Until(next), func() { r.expire(g) })
+		return
+	}
 	r.roundOver = true
+	result := r.roundResultLocked()
+	r.state = StateSummary
+	r.mu.Unlock()
+	r.broadcast("round_result", result)
+	r.scheduleAutoNext(g)
+}
+
+// settleRoundLocked flags every unsolved seat whose own clock has run out
+// (the shared deadline or its private extension — whichever the seat holds)
+// and reports whether the round is decided: everyone solved or out of time.
+func (r *Room) settleRoundLocked() bool {
+	now := time.Now()
+	for _, p := range r.players {
+		if p.solvedRoundNo == r.roundNo || p.timedOutRoundNo == r.roundNo {
+			continue
+		}
+		if p.deadlineLocked(r.deadline).Before(now) {
+			p.timedOutRoundNo = r.roundNo
+		}
+	}
+	return r.allDoneLocked()
+}
+
+// allDoneLocked reports whether every seat finished the round one way or
+// another — solved, or out of time.
+func (r *Room) allDoneLocked() bool {
+	for _, p := range r.players {
+		if p.solvedRoundNo != r.roundNo && p.timedOutRoundNo != r.roundNo {
+			return false
+		}
+	}
+	return true
+}
+
+// deadlineLocked is the seat's own clock: the shared deadline, pushed out
+// while a time extension of this round is still live.
+func (p *player) deadlineLocked(shared time.Time) time.Time {
+	if p.extendEndsAt.After(shared) {
+		return p.extendEndsAt
+	}
+	return shared
+}
+
+// roundResultLocked builds the round_result payload: everyone's cumulative
+// standings with this round's gains, the dealt hand's solution, and the
+// moment the summary auto-advances should the host stay silent.
+func (r *Room) roundResultLocked() map[string]any {
 	sol := ""
 	if sols := game.Solve(r.numbersForSolution()); len(sols) > 0 {
 		sol = sols[0].Expr
 	}
-	result := map[string]any{
-		"roundNo": r.roundNo, "winner": nil, "solution": sol,
-		"standings": r.standingsLocked(),
+	return map[string]any{
+		"roundNo":    r.roundNo,
+		"solution":   sol,
+		"standings":  r.standingsLocked(),
+		"autoNextAt": time.Now().Add(autoNextDelay).UnixMilli(),
 	}
-	r.state = StateSummary
-	r.mu.Unlock()
-	r.broadcast("round_result", result)
-	r.scheduleNext(g)
+}
+
+// nextDeadlineLocked returns the earliest still-live clock among the seats
+// that are neither solved nor timed out yet — the next moment the round can
+// decide itself.
+func (r *Room) nextDeadlineLocked() time.Time {
+	next := time.Time{}
+	for _, p := range r.players {
+		if p.solvedRoundNo == r.roundNo || p.timedOutRoundNo == r.roundNo {
+			continue
+		}
+		effective := p.deadlineLocked(r.deadline)
+		if next.IsZero() || effective.Before(next) {
+			next = effective
+		}
+	}
+	if next.IsZero() {
+		next = r.deadline
+	}
+	return next
 }
 
 func (r *Room) numbersForSolution() []int {
@@ -465,18 +628,65 @@ func (r *Room) numbersForSolution() []int {
 	return nil
 }
 
-func (r *Room) scheduleNext(g int) {
-	time.AfterFunc(r.summaryDur, func() {
-		r.mu.Lock()
-		same := r.gen == g
+// Next is the host's go signal between rounds: only they may start the next
+// round — or, once the last round has been summarized, close out the match.
+// Everyone else waits in the summary; if the host stays silent past the
+// auto-advance window, the match moves on by itself (see scheduleAutoNext).
+func (r *Room) Next(sessionID string) error {
+	r.mu.Lock()
+	if sessionID != r.hostID {
 		r.mu.Unlock()
-		if same {
-			r.nextRound()
+		return fmt.Errorf("only the host can continue")
+	}
+	if r.state != StateSummary {
+		r.mu.Unlock()
+		return fmt.Errorf("no round to continue from")
+	}
+	r.advanceLocked()
+	return nil
+}
+
+// advanceLocked moves the match out of the summary — the next round, or the
+// podium once every round is summarized. The lock must be held and is
+// released on the way out; the state re-check inside keeps a host press
+// racing the auto-advance timer from moving the match twice.
+func (r *Room) advanceLocked() {
+	if r.state != StateSummary {
+		r.mu.Unlock()
+		return
+	}
+	if r.roundNo >= r.cfg.Rounds {
+		r.state = StateFinished
+		r.roundOver = true
+		standings := r.rankedStandingsLocked()
+		r.mu.Unlock()
+		r.broadcast("match_end", map[string]any{"standings": standings})
+		return
+	}
+	r.dealRoundLocked()
+}
+
+// scheduleAutoNext is the stall guard: when a round's summary begins, a
+// window opens for the host to continue at their own pace — past it, the
+// summary advances itself so a silent host can never freeze the room.
+func (r *Room) scheduleAutoNext(g int) {
+	time.AfterFunc(autoNextDelay, func() {
+		r.mu.Lock()
+		// a stale timer from an older summary no-ops: only the live one
+		// (same generation, still sitting in the summary) may advance
+		if r.gen != g || r.state != StateSummary {
+			r.mu.Unlock()
+			return
 		}
+		r.advanceLocked()
 	})
 }
 
-// Submit verifies a trace; the first correct one wins the round.
+// Submit verifies a trace and scores the seat's own solve: every player
+// races the same hand until they solve it or the clock dies, and the sooner
+// a seat solves, the more remaining time it banks. A solve marks the seat
+// (the roster shows the "solved" status) and the round ends only when every
+// seat has solved — or when expire closes it on time.
 func (r *Room) Submit(sessionID string, steps []game.Step) error {
 	r.mu.Lock()
 	if r.state != StateRound || r.roundOver {
@@ -488,6 +698,17 @@ func (r *Room) Submit(sessionID string, steps []game.Step) error {
 		r.mu.Unlock()
 		return fmt.Errorf("not in room")
 	}
+	if p.solvedRoundNo == r.roundNo {
+		r.mu.Unlock()
+		return fmt.Errorf("already solved this round")
+	}
+	// each seat submits against its own clock: the shared deadline, pushed
+	// out while a time extension of this round is still live
+	effective := p.deadlineLocked(r.deadline)
+	if time.Now().After(effective) {
+		r.mu.Unlock()
+		return fmt.Errorf("time is up")
+	}
 	hand, ok := r.numbers[sessionID]
 	if !ok {
 		r.mu.Unlock()
@@ -498,7 +719,7 @@ func (r *Room) Submit(sessionID string, steps []game.Step) error {
 		return fmt.Errorf("wrong: %v", err)
 	}
 
-	remaining := int64(time.Until(r.deadline).Seconds())
+	remaining := int64(time.Until(effective).Seconds())
 	if remaining < 0 {
 		remaining = 0
 	}
@@ -506,10 +727,10 @@ func (r *Room) Submit(sessionID string, steps []game.Step) error {
 	points := (10 + remaining) * int64(cfg.Multiplier)
 	p.score += points
 	p.wins++
-	r.roundOver = true
-	r.solvedBy = sessionID
-	expr := game.ExprFromSteps(hand, steps)
-	r.state = StateSummary
+	p.roundPoints = points
+	p.solvedRoundNo = r.roundNo
+	r.solvedCount++
+	p.solveOrder = r.solvedCount
 
 	if p.dbID != "" && r.award != nil {
 		dbID, winner, mode := p.dbID, p.id, r.cfg.Mode
@@ -530,19 +751,30 @@ func (r *Room) Submit(sessionID string, steps []game.Step) error {
 		}()
 	}
 
-	result := map[string]any{
-		"roundNo":    r.roundNo,
-		"winner":     p.id,
-		"winnerName": p.name,
-		"expr":       expr,
-		"points":     points,
-		"standings":  r.standingsLocked(),
+	// the round is decided when everyone is done — this solve, or a clock
+	// that already ran out on its own. Private clocks die at different
+	// times, so a seat that timed out earlier counts as finished here.
+	allDone := r.settleRoundLocked()
+	var result map[string]any
+	if allDone {
+		// the last solver just banked: close the round at once — the match
+		// moves on when the host calls the next round, or the auto-advance
+		// window elapses on a silent host
+		r.roundOver = true
+		r.state = StateSummary
+		result = r.roundResultLocked()
 	}
 	g := r.gen
 	r.mu.Unlock()
 
-	r.broadcast("round_result", result)
-	r.scheduleNext(g)
+	if allDone {
+		r.broadcast("round_result", result)
+		r.scheduleAutoNext(g)
+	} else {
+		// round keeps running: everyone sees the fresh roster with the
+		// seat's solved status
+		r.sendState()
+	}
 	return nil
 }
 
@@ -573,6 +805,12 @@ func (r *Room) Hint(sessionID string) error {
 		r.mu.Unlock()
 		return fmt.Errorf("round is over")
 	}
+	// one solution per round: the reveal stays on the board, so a second
+	// press in the same hand could only waste quota
+	if p.hintRoundNo == r.roundNo || p.solvedRoundNo == r.roundNo {
+		r.mu.Unlock()
+		return fmt.Errorf("solution already used this round")
+	}
 	if p.hintsLeft <= 0 {
 		r.mu.Unlock()
 		return fmt.Errorf("no hints left")
@@ -588,6 +826,7 @@ func (r *Room) Hint(sessionID string) error {
 		return fmt.Errorf("no hint available")
 	}
 	p.hintsLeft--
+	p.hintRoundNo = r.roundNo
 	r.mu.Unlock()
 	r.sendTo(sessionID, "hint", map[string]any{
 		"leftCard": h.Step.LeftCard, "rightCard": h.Step.RightCard,
@@ -611,6 +850,11 @@ func (r *Room) Regen(sessionID string) error {
 		r.mu.Unlock()
 		return fmt.Errorf("round is over")
 	}
+	// one new hand per round — and none at all once the seat has solved
+	if p.regenRoundNo == r.roundNo || p.solvedRoundNo == r.roundNo {
+		r.mu.Unlock()
+		return fmt.Errorf("new hand already used this round")
+	}
 	if p.regensLeft <= 0 {
 		r.mu.Unlock()
 		return fmt.Errorf("no regenerates left")
@@ -621,10 +865,51 @@ func (r *Room) Regen(sessionID string) error {
 		return err
 	}
 	p.regensLeft--
+	p.regenRoundNo = r.roundNo
 	r.numbers[sessionID] = hand
 	r.mu.Unlock()
 	r.sendTo(sessionID, "regen", map[string]any{"numbers": hand})
 	r.sendState()
+	return nil
+}
+
+// Extend is the multiplayer Add-time helper: the room's own quota — set at
+// room creation and identical for every seat, inventory untouched — pushes
+// the seat's private round deadline out by extendSeconds. One add-time per
+// seat per round. The shared clock
+// keeps running for everyone else; the round stays open until the last live
+// private deadline passes (see expire), and the seat's own submit is graded
+// against its widened window. Guests spend the same room allowance as
+// signed-in players: helpers are room-provided, never personal.
+func (r *Room) Extend(sessionID string) error {
+	r.mu.Lock()
+	p, ok := r.players[sessionID]
+	if !ok {
+		r.mu.Unlock()
+		return fmt.Errorf("not in room")
+	}
+	if r.state != StateRound || r.roundOver {
+		r.mu.Unlock()
+		return fmt.Errorf("round is over")
+	}
+	// one add-time per round — and none at all once the seat has solved
+	if p.extendRoundNo == r.roundNo || p.solvedRoundNo == r.roundNo {
+		r.mu.Unlock()
+		return fmt.Errorf("time extension already used this round")
+	}
+	if p.extendsLeft <= 0 {
+		r.mu.Unlock()
+		return fmt.Errorf("no time extensions left")
+	}
+	p.extendsLeft--
+	p.extendRoundNo = r.roundNo
+	p.extendEndsAt = r.deadline.Add(extendSeconds * time.Second)
+	endsAt, extra := p.extendEndsAt, extendSeconds
+	r.mu.Unlock()
+	r.sendState()
+	r.sendTo(sessionID, "extended", map[string]any{
+		"endsAt": endsAt.UnixMilli(), "extraSeconds": extra,
+	})
 	return nil
 }
 
@@ -646,11 +931,27 @@ func (r *Room) standingsLocked() []playerView {
 	return out
 }
 
+// rankedStandingsLocked stamps the podium places onto the score-sorted
+// roster — the final standings the podium renders. The lock must be held.
+func (r *Room) rankedStandingsLocked() []playerView {
+	out := r.standingsLocked()
+	for i := range out {
+		out[i].Rank = i + 1
+	}
+	return out
+}
+
 func (r *Room) viewLocked(p *player) playerView {
+	// roundNo 0 = the lobby: nothing has been solved yet, ever
+	solved := r.roundNo > 0 && p.solvedRoundNo == r.roundNo
+	timedOut := r.roundNo > 0 && p.timedOutRoundNo == r.roundNo
 	return playerView{
 		ID: p.id, Name: p.name, Guest: p.dbID == "", Level: p.level, Tier: p.tier,
-		Score: p.score, Wins: p.wins, HintsLeft: p.hintsLeft, RegensLeft: p.regensLeft,
-		Host: p.id == r.hostID, Absent: p.absent,
+		Score: p.score, Wins: p.wins, HintsLeft: p.hintsLeft,
+		ExtendsLeft: p.extendsLeft, RegensLeft: p.regensLeft,
+		Solved: solved, SolveOrder: p.solveOrder, TimedOut: timedOut,
+		Gained: p.roundPoints,
+		Host:   p.id == r.hostID, Absent: p.absent,
 	}
 }
 

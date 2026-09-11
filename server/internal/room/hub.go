@@ -1,5 +1,7 @@
-// Package room implements in-memory multiplayer rooms: players race to
-// solve the same dealt hand, first correct submission wins the round.
+// Package room implements in-memory multiplayer rooms: everyone races the
+// same dealt hand until they solve it or the clock dies — a seat's solve
+// banks its own time-based points and flags it solved, and the round closes
+// once every seat has solved or the deadline passes.
 package room
 
 import (
@@ -32,10 +34,11 @@ func newCode() string { return newSecret(6) }
 
 // Config is fixed at room creation by the host.
 type Config struct {
-	Mode       game.Mode `json:"mode"`
-	Rounds     int       `json:"rounds"`     // 12 / 24 / 36 / 48
-	HintQuota  int       `json:"hintQuota"`  // base, identical for everyone
-	RegenQuota int       `json:"regenQuota"` // base, identical for everyone
+	Mode        game.Mode `json:"mode"`
+	Rounds      int       `json:"rounds"`      // 12 / 24 / 36 / 48
+	HintQuota   int       `json:"hintQuota"`   // base, identical for everyone
+	ExtendQuota int       `json:"extendQuota"` // add-time uses, identical for everyone
+	RegenQuota  int       `json:"regenQuota"`  // base, identical for everyone
 }
 
 // Unlock is one achievement earned by a round win; the room pushes it to
@@ -63,6 +66,10 @@ var (
 	removeGrace = 15 * time.Second
 	hostGrace   = 30 * time.Second
 	playerGrace = 10 * time.Second
+	// autoNextDelay is how long a round's summary waits for the host to
+	// continue before the match advances itself — the stall guard that
+	// keeps a silent host from freezing the room mid-match.
+	autoNextDelay = 60 * time.Second
 )
 
 type Hub struct {
@@ -86,7 +93,9 @@ func (h *Hub) Create(cfg Config) (*Room, string, error) {
 	default:
 		return nil, "", fmt.Errorf("room: rounds must be 12, 24, 36 or 48")
 	}
-	if cfg.HintQuota < 0 || cfg.HintQuota > 5 || cfg.RegenQuota < 0 || cfg.RegenQuota > 5 {
+	if cfg.HintQuota < 0 || cfg.HintQuota > 5 ||
+		cfg.ExtendQuota < 0 || cfg.ExtendQuota > 5 ||
+		cfg.RegenQuota < 0 || cfg.RegenQuota > 5 {
 		return nil, "", fmt.Errorf("room: quotas must be within 0..5")
 	}
 	h.mu.Lock()

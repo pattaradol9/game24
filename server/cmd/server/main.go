@@ -78,6 +78,11 @@ func main() {
 	var verifier *auth.GoogleVerifier
 	if cfg.GoogleClientID != "" {
 		verifier = auth.NewGoogleVerifier(cfg.GoogleClientID)
+		// E2E seam: let a local JWKS stand in for Google's (production
+		// never sets GOOGLE_JWKS_URL, so the real endpoint stays).
+		if cfg.GoogleJWKSURL != "" {
+			verifier.JWKSURL = cfg.GoogleJWKSURL
+		}
 	} else {
 		log.Printf("GOOGLE_OAUTH_CLIENT_ID not set: google sign-in disabled (guest play only)")
 	}

@@ -29,6 +29,16 @@ func (a *API) notifyPlayer(p store.Player) {
 	a.Presence.Publish(p.ID, presence.Event{Name: "player", Data: raw})
 }
 
+// NotifyPlayerByID is the exported door for callers outside the package
+// (the room seat's item-spend callback in main) that mutate a player's
+// inventory without holding a Player value: the fresh profile rides to the
+// player's open tabs so bag counts update without a refresh.
+func (a *API) NotifyPlayerByID(playerID string) {
+	if p, err := a.Store.PlayerByID(playerID); err == nil {
+		a.notifyPlayer(p)
+	}
+}
+
 // notifyPlayerDeleted tells every live socket of the player that the account
 // is gone, so its open tabs drop the dead session at once.
 func (a *API) notifyPlayerDeleted(playerID string) {

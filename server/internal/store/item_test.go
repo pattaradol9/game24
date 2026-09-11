@@ -362,7 +362,7 @@ func TestPersonalBoostStacksAdditivelyWithServerBoost(t *testing.T) {
 	}
 
 	// base 100 EXP → server ×2 plus personal ×2 stack additively: ×3, never ×4
-	_, _, payout, err := s.awardEXP(id, "queen", 100, true)
+	_, _, payout, err := s.awardEXP(id, "queen", 100, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestPersonalBoostStacksAdditivelyWithServerBoost(t *testing.T) {
 	if _, _, _, err := s.UseItem(id, "coin5", 1); err != nil {
 		t.Fatal(err)
 	}
-	_, _, payout, err = s.awardEXP(id, "queen", 100, true)
+	_, _, payout, err = s.awardEXP(id, "queen", 100, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -410,7 +410,7 @@ func TestExpiredPersonalBoostStopsPaying(t *testing.T) {
 	if _, ok := s.ActivePlayerBoost(id, BoostKindExp); ok {
 		t.Fatal("expired personal boost must not apply")
 	}
-	_, _, payout, err := s.awardEXP(id, "queen", 100, true)
+	_, _, payout, err := s.awardEXP(id, "queen", 100, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -682,5 +682,62 @@ func TestSkipRoundSpendsItemOncePerSession(t *testing.T) {
 	}
 	if _, err := s.SkipRound(id, r4.ID); !errors.Is(err, ErrRoundClosed) {
 		t.Fatalf("skip finished round = %v, want ErrRoundClosed", err)
+	}
+}
+
+// Multiplayer round wins ignore the winner's personal item boosts — every
+// seat is paid on equal footing — while a server-wide boost still counts,
+// applying to everyone alike.
+func TestRoomWinPayoutIgnoresPersonalItemBoosts(t *testing.T) {
+	s := openTest(t)
+	id, _ := googlePlayer(t, s, "roomwin")
+
+	// the player arms a personal ×2 on both payout kinds
+	if _, _, err := s.AwardEXP(id, "queen", 9000, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []string{"exp2", "coin2"} {
+		if err := s.BuyItem(id, item, 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err := s.UseItem(id, item, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// no server boost: a room win pays the bare base amounts
+	_, _, payout, err := s.awardEXP(id, "queen", 100, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payout.ExpGain != 100 {
+		t.Fatalf("room-win exp = %d, want base 100 — personal items must not pay", payout.ExpGain)
+	}
+	if payout.CoinGain != 10 {
+		t.Fatalf("room-win coins = %d, want base 10 — personal items must not pay", payout.CoinGain)
+	}
+
+	// a solo hand in the same situation still enjoys the personal ×2s
+	_, _, payout, err = s.awardEXP(id, "queen", 100, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payout.ExpGain != 200 || payout.CoinGain != 20 {
+		t.Fatalf("solo payout = %d exp / %d coins, want the personal ×2s (200/20)", payout.ExpGain, payout.CoinGain)
+	}
+
+	// a server-wide ×2 applies to room wins: everyone gets it alike
+	if _, err := s.SetBoostConfig("admin:x", BoostKindExp, 2, 60, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.EnableBoost("admin:x", BoostKindExp); err != nil {
+		t.Fatal(err)
+	}
+	_, _, payout, err = s.awardEXP(id, "queen", 100, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if payout.ExpGain != 200 {
+		t.Fatalf("room-win exp with server ×2 = %d, want 200", payout.ExpGain)
 	}
 }

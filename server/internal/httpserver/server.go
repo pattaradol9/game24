@@ -35,7 +35,13 @@ func New(cfg config.Config, api *handler.API, webFS fs.FS) *Server {
 	// caps every request at 90s — websocket upgrades hijack the connection
 	// and manage their own lifetime after that
 	r.Use(middleware.Timeout(90 * time.Second))
-	r.Use(httprate.LimitByIP(200, time.Minute))
+	// per-IP API cap, tunable for load-tested environments (E2E) through
+	// RATE_LIMIT_PER_MIN; production keeps the 200/min default
+	limitPerMin := cfg.RateLimitPerMin
+	if limitPerMin <= 0 {
+		limitPerMin = 200
+	}
+	r.Use(httprate.LimitByIP(limitPerMin, time.Minute))
 	r.Use(cors.Handler(cors.Options{
 		AllowedOrigins:   cfg.CORSOrigins,
 		AllowedMethods:   []string{"GET", "POST", "PATCH", "DELETE", "OPTIONS"},

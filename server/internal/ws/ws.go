@@ -168,7 +168,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			// the seat may be a resumed one — report its id, not the
 			// fresh session id, so the client's "you" stays consistent
-			sess = rm.Join(info, c)
+			var err error
+			if sess, err = rm.Join(info, c); err != nil {
+				h.reply(c, "error", map[string]any{"message": err.Error()})
+				continue
+			}
 			h.reply(c, "joined", map[string]any{"sessionId": sess})
 		case "rename":
 			if sess == "" {
@@ -196,6 +200,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if err := rm.Start(sess); err != nil {
+				h.reply(c, "error", map[string]any{"message": err.Error()})
+			}
+		case "next":
+			if sess == "" {
+				h.reply(c, "error", map[string]any{"message": "join first"})
+				continue
+			}
+			if err := rm.Next(sess); err != nil {
 				h.reply(c, "error", map[string]any{"message": err.Error()})
 			}
 		case "submit":
@@ -228,6 +240,24 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := rm.Regen(sess); err != nil {
 				h.reply(c, "error", map[string]any{"message": err.Error()})
+			}
+		case "extend":
+			if sess == "" {
+				h.reply(c, "error", map[string]any{"message": "join first"})
+				continue
+			}
+			if err := rm.Extend(sess); err != nil {
+				h.reply(c, "error", map[string]any{"message": err.Error()})
+			}
+		case "leave":
+			if sess == "" {
+				continue
+			}
+			// an explicit goodbye: only the host's ends the match for every
+			// seat at once — and takes the room with it. No reply: the
+			// sender is on their way out.
+			if rm.HostLeft(sess) {
+				h.hub.Remove(rm.Code())
 			}
 		default:
 			h.reply(c, "error", map[string]any{"message": "unknown message type"})

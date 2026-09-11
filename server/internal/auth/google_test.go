@@ -64,7 +64,7 @@ func TestVerifyIDToken(t *testing.T) {
 	f.publish(t, []jwk{jwkOf("kid-1", &key.PublicKey)})
 
 	v := NewGoogleVerifier("my-client-id")
-	v.jwksURL = f.ts.URL
+	v.JWKSURL = f.ts.URL
 
 	token := sign(t, "kid-1", key, IDTokenClaims{
 		Sub: "google-sub-1", Email: "p@mail.com", Name: "Player One", Aud: "my-client-id",
@@ -87,7 +87,7 @@ func TestVerifyRejects(t *testing.T) {
 	f.publish(t, []jwk{jwkOf("kid-1", &key.PublicKey), jwkOf("kid-404", &other.PublicKey)})
 
 	v := NewGoogleVerifier("my-client-id")
-	v.jwksURL = f.ts.URL
+	v.JWKSURL = f.ts.URL
 
 	cases := []struct {
 		name  string

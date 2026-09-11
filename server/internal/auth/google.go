@@ -45,8 +45,12 @@ type jwk struct {
 
 type GoogleVerifier struct {
 	clientID string
-	jwksURL  string
-	hc       *http.Client
+	// JWKSURL is where signing keys are fetched from. It defaults to
+	// Google's published JWKS; the E2E environment overrides it (through
+	// GOOGLE_JWKS_URL) so locally minted ID tokens can be verified without
+	// touching the network.
+	JWKSURL string
+	hc      *http.Client
 
 	mu      sync.Mutex
 	keys    map[string]*rsa.PublicKey
@@ -54,7 +58,7 @@ type GoogleVerifier struct {
 }
 
 func NewGoogleVerifier(clientID string) *GoogleVerifier {
-	return &GoogleVerifier{clientID: clientID, jwksURL: googleJWKS, hc: &http.Client{Timeout: 10 * time.Second}}
+	return &GoogleVerifier{clientID: clientID, JWKSURL: googleJWKS, hc: &http.Client{Timeout: 10 * time.Second}}
 }
 
 func (v *GoogleVerifier) Verify(ctx context.Context, idToken string) (IDTokenClaims, error) {
@@ -135,7 +139,7 @@ func (v *GoogleVerifier) publicKey(ctx context.Context, kid string) (*rsa.Public
 }
 
 func (v *GoogleVerifier) refresh(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.jwksURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.JWKSURL, nil)
 	if err != nil {
 		return err
 	}

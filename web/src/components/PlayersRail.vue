@@ -22,6 +22,12 @@ defineProps({
         </span>
         <!-- a refresh holds this row's seat: only this chip shows the wait -->
         <span v-if="p.absent" class="wait" :title="t('playerReconnecting')" />
+        <!-- solved the current round: the tag carries the finish order -->
+        <span v-else-if="p.solved" class="solved-tag">
+          {{ t('solvedStatus') }} <b class="order">#{{ p.solveOrder }}</b>
+        </span>
+        <!-- own clock ran out: the seat waits out the round like the solvers -->
+        <span v-else-if="p.timedOut" class="out-tag">{{ t('timeUpStatus') }}</span>
         <span v-else class="score">{{ p.score }}</span>
       </li>
     </TransitionGroup>
@@ -69,5 +75,34 @@ defineProps({
   line-height: 1.3;
 }
 .score { font-size: 1rem; font-weight: 600; color: var(--accent); font-variant-numeric: tabular-nums; }
+/* "solved" swaps in for the score while the seat waits out the round */
+.solved-tag {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--good);
+  background: color-mix(in srgb, var(--good) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--good) 45%, transparent);
+  border-radius: var(--r-full);
+  padding: 3px 9px;
+  line-height: 1.3;
+}
+/* the finish order inside the tag: ตอบเสร็จ #1, #2, … */
+.solved-tag .order { color: var(--accent); }
+/* out of time: waits out the round like the solvers, in a muted red */
+.out-tag {
+  flex: none;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--bad) 40%, transparent);
+  border-radius: var(--r-full);
+  padding: 3px 9px;
+  line-height: 1.3;
+}
 .jump-enter-active { animation: rise-in 0.24s var(--ease); }
 </style>

@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -26,7 +27,9 @@ type Config struct {
 	EncryptionKey              string // 32-byte AES key, base64 or hex (local dev)
 	SecretManagerEncryptionKey string // Secret Manager ref; when set, fetched key overrides EncryptionKey
 	GoogleClientID             string
+	GoogleJWKSURL              string   // ID-token signing-key source; empty = Google's real JWKS (E2E tests point it at a local stand-in)
 	AdminEmails                []string // allowlist guarding /api/v1/admin/*; empty = admin API disabled
+	RateLimitPerMin            int      // per-IP API request cap; <= 0 keeps the built-in 200/min default
 	PublicBaseURL              string   // canonical site origin (https://example.com); empty = derive per-request from Host
 }
 
@@ -39,7 +42,9 @@ func Load() Config {
 		EncryptionKey:              os.Getenv("ENCRYPTION_KEY"),
 		SecretManagerEncryptionKey: os.Getenv("SECRETMANAGER_ENCRYPTION_KEY"),
 		GoogleClientID:             os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
+		GoogleJWKSURL:              os.Getenv("GOOGLE_JWKS_URL"),
 		AdminEmails:                splitEmails(os.Getenv("ADMIN_EMAILS")),
+		RateLimitPerMin:            envInt("RATE_LIMIT_PER_MIN", 0),
 		PublicBaseURL:              normalizeBaseURL(os.Getenv("PUBLIC_URL")),
 	}
 }
@@ -49,6 +54,20 @@ func env(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envInt reads an integer variable; empty or unparsable values fall back so a
+// typo can never zero out a safety knob.
+func envInt(key string, fallback int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return fallback
+	}
+	return n
 }
 
 // loadDotenv reads .env from the working directory, then from the parent

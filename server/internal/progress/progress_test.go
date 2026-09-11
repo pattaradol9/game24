@@ -94,11 +94,11 @@ func TestExpForHand(t *testing.T) {
 	tests := []struct {
 		remaining, modeMult, want int64
 	}{
-		{45, 2, 61},  // queen: (8 + 22.5) × 2 = 61
-		{90, 1, 53},  // jack: (8 + 45) × 1 = 53
-		{0, 5, 40},   // ace at the buzzer: the solve's flat base carries it
-		{80, 2, 96},  // (8 + 40) × 2
-		{13, 3, 44},  // rounding: (8 + 6.5) × 3 = 43.5 → 44
+		{45, 2, 61}, // queen: (8 + 22.5) × 2 = 61
+		{90, 1, 53}, // jack: (8 + 45) × 1 = 53
+		{0, 5, 40},  // ace at the buzzer: the solve's flat base carries it
+		{80, 2, 96}, // (8 + 40) × 2
+		{13, 3, 44}, // rounding: (8 + 6.5) × 3 = 43.5 → 44
 	}
 	for _, tc := range tests {
 		if got := ExpForHand(tc.remaining, tc.modeMult); got != tc.want {

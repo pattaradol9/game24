@@ -12,6 +12,7 @@ const error = ref('')
 const mode = ref('queen')
 const rounds = ref(12)
 const hintQuota = ref(3)
+const extendQuota = ref(1)
 const regenQuota = ref(2)
 
 async function create() {
@@ -22,6 +23,7 @@ async function create() {
       mode: mode.value,
       rounds: rounds.value,
       hintQuota: hintQuota.value,
+      extendQuota: extendQuota.value,
       regenQuota: regenQuota.value,
     })
     emit('created', data.code, data.hostKey)
@@ -59,6 +61,8 @@ async function create() {
       </div>
       <label>{{ t('hintQuota') }}: {{ hintQuota }}</label>
       <input v-model.number="hintQuota" type="range" min="0" max="5" />
+      <label>{{ t('extendQuota') }}: {{ extendQuota }}</label>
+      <input v-model.number="extendQuota" type="range" min="0" max="5" />
       <label>{{ t('regenQuota') }}: {{ regenQuota }}</label>
       <input v-model.number="regenQuota" type="range" min="0" max="5" />
       <p class="note">{{ t('multiplayerBoardHint') }}</p>

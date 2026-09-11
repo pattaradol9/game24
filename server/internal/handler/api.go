@@ -896,10 +896,11 @@ func (a *API) leaderboard(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createRoom(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Mode       game.Mode `json:"mode"`
-		Rounds     int       `json:"rounds"`
-		HintQuota  int       `json:"hintQuota"`
-		RegenQuota int       `json:"regenQuota"`
+		Mode        game.Mode `json:"mode"`
+		Rounds      int       `json:"rounds"`
+		HintQuota   int       `json:"hintQuota"`
+		ExtendQuota int       `json:"extendQuota"`
+		RegenQuota  int       `json:"regenQuota"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		fail(w, http.StatusBadRequest, "invalid payload")
@@ -907,7 +908,8 @@ func (a *API) createRoom(w http.ResponseWriter, r *http.Request) {
 	}
 	rm, hostKey, err := a.Hub.Create(room.Config{
 		Mode: body.Mode, Rounds: body.Rounds,
-		HintQuota: body.HintQuota, RegenQuota: body.RegenQuota,
+		HintQuota: body.HintQuota, ExtendQuota: body.ExtendQuota,
+		RegenQuota: body.RegenQuota,
 	})
 	if err != nil {
 		fail(w, http.StatusBadRequest, err.Error())

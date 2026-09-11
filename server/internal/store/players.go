@@ -318,7 +318,7 @@ func (s *Store) ModeStats(playerID string) (map[string]ModeStat, error) {
 // item boosts stack additively (a ×2 server boost plus a ×2 item pays ×3,
 // never the compounded ×4).
 func (s *Store) AwardEXP(playerID, mode string, points int64, solved bool) (ModeStat, int64, error) {
-	st, total, _, err := s.awardEXP(playerID, mode, points, solved)
+	st, total, _, err := s.awardEXP(playerID, mode, points, solved, false)
 	return st, total, err
 }
 
@@ -329,13 +329,17 @@ type handPayout struct {
 	CoinGain int64
 }
 
-func (s *Store) awardEXP(playerID, mode string, points int64, solved bool) (ModeStat, int64, handPayout, error) {
+func (s *Store) awardEXP(playerID, mode string, points int64, solved, roomWin bool) (ModeStat, int64, handPayout, error) {
 	// the boost lookups must happen before the transaction opens: the pool
-	// holds a single connection and a query inside the tx would deadlock
+	// holds a single connection and a query inside the tx would deadlock.
+	// A multiplayer round win ignores the player's own item boosts — room
+	// payouts keep every seat equal — while server-wide boosts still count,
+	// applying to everyone alike.
+	personal := !roomWin
 	payout := handPayout{CoinGain: CoinsForHand(points)}
 	if solved {
-		payout.ExpGain = BoostAmount(points, s.payoutMultiplier(playerID, BoostKindExp))
-		payout.CoinGain = BoostAmount(CoinsForHand(points), s.payoutMultiplier(playerID, BoostKindCoins))
+		payout.ExpGain = BoostAmount(points, s.payoutMultiplier(playerID, BoostKindExp, personal))
+		payout.CoinGain = BoostAmount(CoinsForHand(points), s.payoutMultiplier(playerID, BoostKindCoins, personal))
 	}
 	tx, err := s.db.Begin()
 	if err != nil {

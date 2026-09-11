@@ -267,7 +267,7 @@ func TestBoostExpiryAndReArm(t *testing.T) {
 	if _, active := s.ActiveBoost(BoostKindExp); active {
 		t.Fatal("expired boost must not be active")
 	}
-	st, _, _, err := s.awardEXP(id, "queen", 50, true)
+	st, _, _, err := s.awardEXP(id, "queen", 50, true, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ func TestBoostExpiryAndReArm(t *testing.T) {
 	if left := time.Until(ab.EndsAt); left < 59*time.Second || left > 61*time.Second {
 		t.Fatalf("re-armed boost ends in %v, want ~1m", left)
 	}
-	if _, _, _, err := s.awardEXP(id, "queen", 50, true); err != nil {
+	if _, _, _, err := s.awardEXP(id, "queen", 50, true, false); err != nil {
 		t.Fatal(err)
 	}
 	sts, err := s.ModeStats(id)
@@ -340,7 +340,7 @@ func TestBoostConfigEditableWhileActive(t *testing.T) {
 	if !active || !abAfter.EndsAt.Equal(abBefore.EndsAt) {
 		t.Fatalf("config save must not move the window: before=%+v after=%+v", abBefore, abAfter)
 	}
-	if _, _, _, err := s.awardEXP(id, "queen", 10, true); err != nil {
+	if _, _, _, err := s.awardEXP(id, "queen", 10, true, false); err != nil {
 		t.Fatal(err)
 	}
 	sts, err := s.ModeStats(id)

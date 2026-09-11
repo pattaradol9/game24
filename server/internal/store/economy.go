@@ -30,9 +30,11 @@ func CoinsForHand(points int64) int64 {
 type AwardResult struct {
 	Stat ModeStat
 	// ExpEarned and CoinsEarned are what the hand itself paid into the
-	// ledgers — base amounts with every boost multiplier (server-wide and
-	// the player's own items) already applied. Achievement rewards banked
-	// in the same call are not part of them.
+	// ledgers — base amounts with the boost multipliers already applied:
+	// server-wide campaigns plus, for solo hands, the player's own items.
+	// A multiplayer round win ignores personal item boosts so every seat
+	// is paid on equal footing. Achievement rewards banked in the same
+	// call are not part of them.
 	ExpEarned   int64
 	CoinsEarned int64
 	TotalExp    int64
@@ -44,7 +46,7 @@ type AwardResult struct {
 // multiplayer round win, then evaluates achievements. The returned defs were
 // unlocked by this solve; their rewards are already applied to the totals.
 func (s *Store) AwardSolve(playerID, mode string, points int64, roomWin bool) (AwardResult, []achv.Def, error) {
-	stat, _, payout, err := s.awardEXP(playerID, mode, points, true)
+	stat, _, payout, err := s.awardEXP(playerID, mode, points, true, roomWin)
 	if err != nil {
 		return AwardResult{}, nil, err
 	}
