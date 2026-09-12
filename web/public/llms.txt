@@ -1,0 +1,15 @@
+# 24 Game
+
+> The classic 24 math card game: draw four cards and combine them with + − × ÷ to make 24. Free to play in the browser, no signup required — solo play earns EXP, levels and tiers, and real-time rooms race friends on identical hands.
+
+24 Game is a single-page web app. Public pages:
+
+- [Home](/): game overview, difficulty modes and entry points
+- [Solo play](/solo): four difficulty modes (Jack, Queen, King, Ace) with timer, streaks and hints
+- [Leaderboards](/leaderboard): per-mode EXP rankings of every player
+- [Achievements](/achievements): the full 50-entry achievement catalog with rewards
+- [Shop](/shop): card skins and consumable boost items bought with in-game coins
+- [Privacy policy](/privacy): what data is stored, how it is encrypted, player rights
+- [Terms of service](/terms): usage rules
+
+Room links (/room/CODE) are private match sessions and the admin portal (/admin) is back-office only; both are excluded from search indexes. Players sign in with Google or play as guests; all scoring is server-verified.

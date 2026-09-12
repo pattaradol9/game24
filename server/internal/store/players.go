@@ -418,19 +418,28 @@ type Round struct {
 	HintsUsed int64
 	ExtendSec int64 // seconds a time-extension item added to this hand's countdown
 	SkipUsed  int64 // 1 = the hand was folded with a skip-pass item
-	DealtAt   time.Time
+	// base countdown in seconds; 0 = derive from the mode config. Solo
+	// ladder rounds stamp their stage-shrunk window here.
+	TimeLimitSec int64
+	DealtAt      time.Time
 }
 
 // CreateRound deals a hand into a new round. sessionID groups consecutive
-// hands of one play session, so hint budgets can span rounds.
-func (s *Store) CreateRound(playerID, mode string, numbers []int, sessionID string) (Round, error) {
+// hands of one play session, so hint budgets can span rounds. timeLimitSec
+// optionally overrides the mode's base window (solo ladder rounds carry
+// their stage-shrunk limit; omitted or 0 = the mode default).
+func (s *Store) CreateRound(playerID, mode string, numbers []int, sessionID string, timeLimitSec ...int64) (Round, error) {
 	id := randomID(16)
 	numsJSON, err := json.Marshal(numbers)
 	if err != nil {
 		return Round{}, err
 	}
-	if _, err := s.db.Exec(`INSERT INTO rounds (id, player_id, mode, session_id, numbers) VALUES (?,?,?,?,?)`,
-		id, playerID, mode, sessionID, string(numsJSON)); err != nil {
+	window := int64(0)
+	if len(timeLimitSec) > 0 {
+		window = timeLimitSec[0]
+	}
+	if _, err := s.db.Exec(`INSERT INTO rounds (id, player_id, mode, session_id, numbers, time_limit) VALUES (?,?,?,?,?,?)`,
+		id, playerID, mode, sessionID, string(numsJSON), window); err != nil {
 		return Round{}, err
 	}
 	return s.RoundByID(id, playerID)
@@ -442,9 +451,9 @@ func (s *Store) RoundByID(id, playerID string) (Round, error) {
 		numsJSON   string
 		dealtAtStr string
 	)
-	err := s.db.QueryRow(`SELECT id, player_id, mode, session_id, numbers, status, points, elapsed_ms, hints_used, extend_sec, skip_used, dealt_at
+	err := s.db.QueryRow(`SELECT id, player_id, mode, session_id, numbers, status, points, elapsed_ms, hints_used, extend_sec, skip_used, time_limit, dealt_at
 		FROM rounds WHERE id = ? AND player_id = ?`, id, playerID).
-		Scan(&r.ID, &r.PlayerID, &r.Mode, &r.SessionID, &numsJSON, &r.Status, &r.Points, &r.ElapsedMs, &r.HintsUsed, &r.ExtendSec, &r.SkipUsed, &dealtAtStr)
+		Scan(&r.ID, &r.PlayerID, &r.Mode, &r.SessionID, &numsJSON, &r.Status, &r.Points, &r.ElapsedMs, &r.HintsUsed, &r.ExtendSec, &r.SkipUsed, &r.TimeLimitSec, &dealtAtStr)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, ErrNotFound
 	}

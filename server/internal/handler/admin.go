@@ -567,6 +567,9 @@ func (a *API) adminAchievementMutation(w http.ResponseWriter, r *http.Request, g
 	case errors.Is(err, store.ErrNotFound):
 		fail(w, http.StatusNotFound, "player or achievement not found")
 		return
+	case errors.Is(err, store.ErrGuestPlayer):
+		fail(w, http.StatusBadRequest, "guests cannot hold achievements")
+		return
 	case errors.Is(err, store.ErrAlreadyUnlocked):
 		fail(w, http.StatusConflict, "achievement already unlocked")
 		return

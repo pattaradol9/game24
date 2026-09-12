@@ -67,7 +67,10 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.gsi-box { width: 100%; }
+/* one size everywhere: the button clamps itself to 312px (fitting even the
+   narrowest host, the profile menu) and centres in wider containers, so the
+   GSI iframe renders at the same dimensions on every page */
+.gsi-box { width: min(100%, 312px); margin-inline: auto; }
 .gsi-box.pending { visibility: hidden; }
 .gsi-box.gone { display: none; }
 

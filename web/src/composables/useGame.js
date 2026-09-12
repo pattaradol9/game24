@@ -3,6 +3,7 @@ import { api } from '../api.js'
 import { getToken, getPlayer, updatePlayer } from '../auth.js'
 import { newHand, pickCard as doPickCard, setOperator as doSetOperator, undo as doUndo } from '../core/checker.js'
 import { singleHintQuota } from '../core/progress.js'
+import { ladderStageFor } from '../modes.js'
 import { sfx } from '../audio.js'
 import { burst } from '../confetti.js'
 
@@ -27,6 +28,19 @@ export function useGame() {
   const paused = ref(false) // countdown intro: clock frozen, input blocked
   const combo = ref(0) // consecutive merges in this hand (sound pitch ladder)
   const timeLimit = ref(0)
+  // the solo difficulty ladder: a run starts at the picker's mode, climbs a
+  // rung every 10 hands dealt (harder puzzles, 10% less clock, 30s floor).
+  // runMode is the run's starting difficulty, handNo counts the hands dealt
+  // since it began, and runBaseTime is the run's original window (hand 1's
+  // countdown) so the HUD can show the total squeeze. The server owns the
+  // actual numbers — the client only places the rung.
+  const runMode = ref('queen')
+  const handNo = ref(1)
+  const runBaseTime = ref(0)
+  // one-shot escalation notice for the view: { stage, to, timeLimit, from,
+  // fromTime } after a deal that climbed a rung
+  const ladderStep = ref(null)
+  let lastStage = 0
   // the game's running tallies: every solved hand banks its score, EXP and
   // coins — the refresh snapshot owns them so a reload lands back on them
   const sessionScore = ref(0)
@@ -91,6 +105,10 @@ export function useGame() {
       sessionStorage.setItem(SNAPSHOT_KEY, JSON.stringify({
         sessionId,
         mode: mode.value,
+        runMode: runMode.value,
+        handNo: handNo.value,
+        runBaseTime: runBaseTime.value,
+        stage: lastStage,
         roundId: round.value.roundId,
         numbers: round.value.numbers,
         timeLimit: timeLimit.value,
@@ -121,6 +139,10 @@ export function useGame() {
   // quotas and restart the clock from the stored absolute deadline
   function restoreLive(snap) {
     mode.value = snap.mode
+    runMode.value = snap.runMode ?? snap.mode
+    handNo.value = snap.handNo ?? 1
+    runBaseTime.value = snap.runBaseTime ?? 0
+    lastStage = snap.stage ?? ladderStageFor(handNo.value)
     round.value = { roundId: snap.roundId, numbers: snap.numbers }
     hand.value = snap.hand
     // JSON round-trips break card identity: the armed selection must point
@@ -151,7 +173,7 @@ export function useGame() {
     saveSnapshot()
   }
 
-  async function start(m = mode.value) {
+  async function start(m = runMode.value) {
     // a same-tab refresh lands here with the previous game in storage:
     // reuse its session id so the server-side hint/extend/skip quotas treat
     // the resumed game as one continuing visit
@@ -159,25 +181,49 @@ export function useGame() {
     if (snap?.sessionId) sessionId = snap.sessionId
     if (snap && snap.phase === 'result') {
       // refreshed on a result dialog: a win keeps the tallies (that hand is
-      // over and banked), a game-over wipes them for the next run
+      // over and banked), a game-over wipes them for the next run. The
+      // ladder rides along — a win chains to the next hand, a game-over
+      // restarts the run from its first rung
       sessionScore.value = snap.win ? snap.tallies?.score ?? 0 : 0
       sessionExp.value = snap.win ? snap.tallies?.exp ?? 0 : 0
       sessionCoins.value = snap.win ? snap.tallies?.coins ?? 0 : 0
+      mode.value = snap.mode ?? mode.value
+      runMode.value = snap.runMode ?? m
+      if (snap.win) {
+        handNo.value = (snap.handNo ?? 1) + 1
+        runBaseTime.value = snap.runBaseTime ?? 0
+        lastStage = ladderStageFor(handNo.value - 1)
+      } else {
+        handNo.value = 1
+        runBaseTime.value = 0
+        lastStage = 0
+      }
       clearSnapshot()
     } else if (snap?.roundId && snap.hand) {
       restoreLive(snap)
       return
     } else {
       clearSnapshot()
+      // a brand-new run takes the picker's mode as its starting difficulty
+      runMode.value = m
     }
-    mode.value = m
     phase.value = 'loading'
     error.value = ''
     busy.value = true
     combo.value = 0
     extendOffer.value = null
+    const stage = ladderStageFor(handNo.value)
     try {
-      const data = await api.createRound(m, getToken(), sessionId)
+      const data = await api.createRound(runMode.value, getToken(), sessionId, stage)
+      // the rung's own rules come back resolved: its puzzle mode and its
+      // (stage-shrunk) countdown. A climbed rung raises the escalation
+      // notice for the view's toast.
+      if (stage > lastStage) {
+        ladderStep.value = { stage, to: data.mode ?? runMode.value, timeLimit: data.timeLimit, from: mode.value, fromTime: timeLimit.value }
+      }
+      lastStage = stage
+      mode.value = data.mode ?? runMode.value
+      if (stage === 0) runBaseTime.value = data.timeLimit
       round.value = data
       hand.value = newHand(data.numbers)
       remaining.value = data.timeLimit
@@ -442,19 +488,26 @@ export function useGame() {
   }
 
   function next() {
-    // a game-over resets the tallies; a win chains into the next hand
+    // a game-over ends the run: tallies reset and the ladder restarts from
+    // its first rung; a win chains into the next hand of the same run
     if (result.value && !result.value.win) {
       sessionScore.value = 0
       sessionExp.value = 0
       sessionCoins.value = 0
+      handNo.value = 1
+      runBaseTime.value = 0
+      lastStage = 0
+    } else {
+      handNo.value += 1
     }
-    start(mode.value)
+    start(runMode.value)
   }
 
   return {
     phase, mode, hand, round, remaining, timeLimit, hintLeft, hintCard, result, error, busy, paused, combo,
     extendOffer, extendBusy, extendUsed, skipUsed,
     sessionScore, sessionExp, sessionCoins, restored,
+    runMode, handNo, runBaseTime, ladderStep,
     start, resume, stop, pickCard, setOperator, undo, skip, hint, next, resolveExtend, addTime,
   }
 }

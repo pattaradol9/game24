@@ -160,10 +160,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			info := room.Info{SessionID: newSession(), Name: name, HostKey: jd.HostKey, Resume: jd.Resume}
 			if jd.Token != "" {
-				if p, err := h.store.PlayerByToken(jd.Token); err == nil && !p.IsGuest {
+				// guests resolve to their player row too: their round wins
+				// rank on the leaderboard (score only), so the seat carries
+				// its dbID — but no level/tier, guests display as guests
+				if p, err := h.store.PlayerByToken(jd.Token); err == nil {
 					info.DBID = p.ID
-					info.Level = progress.LevelFromExp(p.TotalExp)
-					info.Tier = progress.TierName(p.EffectiveTier())
+					info.Guest = p.IsGuest
+					if !p.IsGuest {
+						info.Level = progress.LevelFromExp(p.TotalExp)
+						info.Tier = progress.TierName(p.EffectiveTier())
+					}
 				}
 			}
 			// the seat may be a resumed one — report its id, not the

@@ -197,6 +197,21 @@ const canUndo = computed(() =>
   playing.value && !mySolved.value && (hand.value?.history?.length ?? 0) > 0
 )
 
+// The deal fanfare is a one-shot, exactly like the solo game's 700ms window:
+// the cards fly in when a fresh hand lands (round start, regen), then the
+// flag stays off — so an undo (3 cards back to 4) replays the solo board's
+// plain pop-in + glide instead of staging a second deal. Deriving this from
+// the board shape (4 untouched cards) would flip it back on every undo.
+const dealing = ref(false)
+let dealTimer = 0
+function dealOnce() {
+  dealing.value = true
+  clearTimeout(dealTimer)
+  dealTimer = later(() => (dealing.value = false), 700)
+}
+watch(roundNo, dealOnce) // round start: every seat deals a fresh hand
+watch(numbers, dealOnce) // regen: a brand-new hand flies in
+
 // a dark helper explains itself where it stands: pressing it pops a bubble
 // over the button naming the reason. Disabled buttons swallow clicks, so a
 // transparent gate lies over the dark button to catch the press.
@@ -412,7 +427,7 @@ const mmss = computed(() =>
             :hand="hand"
             :disabled="boardLocked"
             :hint-data="hint"
-            :dealing="hand.cards.length === 4 && hand.cards.every((c) => c.id.startsWith('c')) && combo === 0 && hand.steps.length === 0"
+            :dealing="dealing"
             :skin="currentPlayer?.skin"
             @pick="room.pickCard"
             @op="room.setOperator"

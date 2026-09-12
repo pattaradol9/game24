@@ -28,7 +28,7 @@ const pct = computed(() => {
     <span class="meta">
       <span class="row">
         <b class="name">{{ player.nickname }}</b>
-        <span class="lv num">Lv.{{ player.level }}</span>
+        <span v-if="!player.isGuest" class="lv num">Lv.{{ player.level }}</span>
       </span>
       <span v-if="player.isGuest" class="tag">{{ t('profileGuest') }}</span>
       <span v-else class="bar">

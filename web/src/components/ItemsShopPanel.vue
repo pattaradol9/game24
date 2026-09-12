@@ -10,7 +10,7 @@ import { api } from '../api.js'
 import { currentPlayer, getToken, updatePlayer } from '../auth.js'
 import { fmtDuration } from '../duration.js'
 import Icon from './Icon.vue'
-import GoogleSignIn from './GoogleSignIn.vue'
+import GuestVeil from './GuestVeil.vue'
 import FxBackdrop from './FxBackdrop.vue'
 
 const { t, lang } = useI18n()
@@ -120,17 +120,12 @@ defineExpose({ reload: load })
 
       <p v-if="error" class="err">{{ error }}</p>
 
-      <!-- guests read the catalog but need a Google account to buy -->
-      <div v-if="!signedIn" class="gate">
-        <Icon name="lock" :size="20" />
-        <p>{{ t('shopSignInRequired') }}</p>
-        <GoogleSignIn @signed-in="onSignedIn" />
-      </div>
-
       <p v-if="signedIn && actionError" class="err">{{ actionError }}</p>
 
-      <div v-if="loading" class="loading">…</div>
-      <div v-else class="grid">
+      <!-- guests browse the catalog behind a blurred veil until sign-in -->
+      <GuestVeil :message="t('shopSignInRequired')" @signed-in="onSignedIn">
+        <div v-if="loading" class="loading">…</div>
+        <div v-else class="grid">
         <article v-for="it in catalog" :key="it.id" class="item-card" :class="'r-' + it.rarity">
           <span class="tile">
             <Icon class="glyph" :name="ICONS[it.kind] ?? 'bolt'" :size="60" />
@@ -171,7 +166,8 @@ defineExpose({ reload: load })
             </div>
           </div>
         </article>
-      </div>
+        </div>
+      </GuestVeil>
     </div>
 
     <!-- purchase confirmation: item, price, and the balance that remains -->
@@ -225,7 +221,7 @@ defineExpose({ reload: load })
 </template>
 
 <style scoped>
-.body { position: relative; overflow: hidden; padding: 26px 28px 30px; }
+.body { position: relative; overflow: clip; padding: 26px 28px 30px; }
 /* the WebGL ambience lives on .body (z 0); the content rides above it */
 .content { position: relative; z-index: 1; display: flex; flex-direction: column; gap: 18px; }
 .head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
@@ -234,18 +230,7 @@ h1 { font-size: 1.4rem; font-weight: 600; letter-spacing: -0.01em; }
 .err { color: var(--bad); font-size: 0.85rem; }
 .loading { text-align: center; color: var(--text-mute); font-size: 1.4rem; padding: 60px 0; }
 
-.gate {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  border: 1px dashed var(--line);
-  border-radius: var(--r-md);
-  padding: 26px 18px;
-  color: var(--text-dim);
-  text-align: center;
-}
-.gate p { font-size: 0.9rem; max-width: 34ch; line-height: 1.5; }
+/* guests browse behind GuestVeil's blur; nothing gate-specific left here */
 
 /* --rc defaults to the common tier here; each card's r-* class retints it
    for everything inside, tile included */

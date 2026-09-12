@@ -1,14 +1,54 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { VitePWA } from 'vite-plugin-pwa'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const root = path.dirname(fileURLToPath(import.meta.url))
+
+// Inlines the built app stylesheet into index.html. The CSS then travels
+// with the document instead of chaining a second render-blocking request
+// after it, which shaves a full round trip off first paint.
+function inlineAppCss() {
+  return {
+    name: 'inline-app-css',
+    apply: 'build',
+    closeBundle() {
+      const htmlPath = path.join(root, 'dist', 'index.html')
+      const html = fs.readFileSync(htmlPath, 'utf8')
+      const inlined = html.replace(
+        /<link rel="stylesheet"[^>]*href="\/(assets\/[^"]+\.css)"[^>]*\/?>(?:<\/link>)?/,
+        (match, href) => {
+          const cssPath = path.join(root, 'dist', href)
+          return `<style>${fs.readFileSync(cssPath, 'utf8')}</style>`
+        },
+      )
+      fs.writeFileSync(htmlPath, inlined)
+    },
+  }
+}
 
 export default defineConfig({
+  // Workers bundling as ES modules keeps the backdrop worker's three.js
+  // import off the main thread.
+  worker: { format: 'es' },
+  build: {
+    // One stylesheet for the whole app: it gets inlined into index.html by
+    // the plugin below, so first paint never waits on a chained CSS request.
+    cssCodeSplit: false,
+  },
   plugins: [
     vue(),
+    inlineAppCss(),
     VitePWA({
       // The service worker updates silently in the background; the next
       // reload picks up the new version (no "update available" prompt UI).
       registerType: 'autoUpdate',
+      // main.js registers the worker itself after the page has loaded and
+      // the browser is idle: registration during load shows up as a long
+      // task on the main thread and steals bandwidth from first paint.
+      injectRegister: null,
       includeAssets: ['favicon.svg', 'apple-touch-icon.png', 'og-card.png'],
       manifest: {
         name: '24 Game — เกมรวมเลขให้ได้ 24',
@@ -43,27 +83,6 @@ export default defineConfig({
         navigateFallback: 'index.html',
         // Never answer API navigations with the SPA shell.
         navigateFallbackDenylist: [/^\/api\//],
-        runtimeCaching: [
-          {
-            // Google Fonts: stylesheet refreshed lazily, font files forever.
-            urlPattern: ({ url }) => url.origin === 'https://fonts.googleapis.com',
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'google-fonts-stylesheets',
-              expiration: { maxEntries: 10, maxAgeSeconds: 60 * 60 * 24 * 365 },
-              cacheableResponse: { statuses: [200] },
-            },
-          },
-          {
-            urlPattern: ({ url }) => url.origin === 'https://fonts.gstatic.com',
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'google-fonts-files',
-              expiration: { maxEntries: 60, maxAgeSeconds: 60 * 60 * 24 * 365 },
-              cacheableResponse: { statuses: [200] },
-            },
-          },
-        ],
       },
       devOptions: {
         enabled: true,

@@ -193,6 +193,7 @@ type playerJSON struct {
 	Boosts     map[string]boostJSON    `json:"boosts,omitempty"`
 	Items      []itemQtyJSON           `json:"items,omitempty"` // inventory stacks (signed-in players)
 	PerMode    map[string]modeStatJSON `json:"perMode"`
+	HighScores map[string]int64        `json:"highScores,omitempty"` // best single hand per mode — the leaderboard figure
 }
 
 // isAdminPlayer reports whether the player's Google email is on the
@@ -234,6 +235,11 @@ func (a *API) toPlayerJSON(p store.Player) playerJSON {
 			Exp: st.Exp, HandsSolved: st.HandsSolved, HandsSkipped: st.HandsSkipped,
 			BestStreak: st.BestStreak, CurrentStreak: st.CurrentStreak,
 		}
+	}
+	// the profile's high-score block reads the same ledger the leaderboard
+	// ranks — guests included, they rank on the board too
+	if hs, err := a.Store.PlayerHighScores(p.ID); err == nil {
+		out.HighScores = hs
 	}
 	return out
 }
@@ -480,12 +486,17 @@ func (a *API) createRound(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Mode      game.Mode `json:"mode"`
 		SessionID string    `json:"sessionId"`
+		Stage     int       `json:"stage"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		fail(w, http.StatusBadRequest, "mode required")
 		return
 	}
-	cfg, err := game.Config(body.Mode)
+	// the solo difficulty ladder owns the hand's rules: the stage picks the
+	// puzzle mode (one step up per LadderStepRounds hands, ace caps it) and
+	// the countdown (10% off the run's base window per stage, 30s floor)
+	stage := clampStage(body.Stage)
+	stageMode, cfg, err := game.LadderConfig(body.Mode, stage)
 	if err != nil {
 		fail(w, http.StatusBadRequest, err.Error())
 		return
@@ -494,12 +505,12 @@ func (a *API) createRound(w http.ResponseWriter, r *http.Request) {
 	if len(body.SessionID) > 64 {
 		body.SessionID = body.SessionID[:64]
 	}
-	hand, err := game.Deal(body.Mode, rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), uint64(time.Now().UnixNano()>>32))))
+	hand, err := game.Deal(stageMode, rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), uint64(time.Now().UnixNano()>>32))))
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	round, err := a.Store.CreateRound(p.ID, string(body.Mode), hand, body.SessionID)
+	round, err := a.Store.CreateRound(p.ID, string(stageMode), hand, body.SessionID, int64(cfg.TimeLimitSec))
 	if err != nil {
 		fail(w, http.StatusInternalServerError, err.Error())
 		return
@@ -512,12 +523,35 @@ func (a *API) createRound(w http.ResponseWriter, r *http.Request) {
 	}
 	ok(w, map[string]any{
 		"roundId":    round.ID,
+		"mode":       stageMode,
+		"stage":      stage,
 		"numbers":    hand,
 		"timeLimit":  cfg.TimeLimitSec,
 		"multiplier": cfg.Multiplier,
 		"hintQuota":  quota,
 		"hintsLeft":  quota - used,
 	})
+}
+
+func clampStage(stage int) int {
+	if stage < 0 {
+		return 0
+	}
+	if stage > game.LadderMaxStage {
+		return game.LadderMaxStage
+	}
+	return stage
+}
+
+// roundBaseWindow is the hand's base countdown: ladder rounds carry their
+// own stage-shrunk limit, older rows fall back to the mode default. The
+// +extend seconds of a time-extension item ride on top of it.
+func roundBaseWindow(round store.Round) int64 {
+	if round.TimeLimitSec > 0 {
+		return round.TimeLimitSec
+	}
+	cfg, _ := game.Config(game.Mode(round.Mode))
+	return int64(cfg.TimeLimitSec)
 }
 
 func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
@@ -545,9 +579,11 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg, _ := game.Config(game.Mode(round.Mode))
 	// a time-extension item widens this hand's window: the expiry check and
-	// the remaining-time payout both count the seconds the item banked
+	// the remaining-time payout both count the seconds the item banked. The
+	// base window is the round's own (ladder stages shrink it), not the mode
+	// default.
 	elapsed := time.Since(round.DealtAt)
-	if elapsed > time.Duration(cfg.TimeLimitSec+int(round.ExtendSec)+10)*time.Second {
+	if elapsed > time.Duration(roundBaseWindow(round)+round.ExtendSec+10)*time.Second {
 		a.Store.FinishRound(round.ID, "expired", 0, elapsed.Milliseconds())
 		// no payout on an expired submit; the skip still counts toward
 		// achievements and will surface on the player's next fetch
@@ -561,7 +597,7 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusUnprocessableEntity, "wrong: "+err.Error())
 		return
 	}
-	remaining := int64(cfg.TimeLimitSec+int(round.ExtendSec)) - int64(elapsed.Seconds())
+	remaining := roundBaseWindow(round) + round.ExtendSec - int64(elapsed.Seconds())
 	if remaining < 0 {
 		remaining = 0
 	}
@@ -586,6 +622,14 @@ func (a *API) submitRound(w http.ResponseWriter, r *http.Request) {
 		expEarned = res.ExpEarned
 		for _, d := range freshUnlocked {
 			unlocked = append(unlocked, toAchievementJSON(d))
+		}
+	} else {
+		// anonymous players rank on the leaderboard too: bank the hand's
+		// score-ledger row — the same figure a signed-in solve banks — while
+		// EXP/coins and achievements stay Google-gated
+		if err := a.Store.RecordScore(p.ID, round.Mode, expBase); err != nil {
+			fail(w, http.StatusInternalServerError, err.Error())
+			return
 		}
 	}
 	a.Store.FinishRound(round.ID, "solved", score, elapsed.Milliseconds())
@@ -691,12 +735,11 @@ func (a *API) timeoutRound(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusConflict, "round already finished")
 		return
 	}
-	cfg, _ := game.Config(game.Mode(round.Mode))
 	// the client folds the hand the moment its countdown hits zero (an intro
 	// pause and network latency always keep elapsed past the base limit), so
 	// the base window itself is the fence — only the +10s SUBMIT grace stays
 	// exclusive to submits
-	if elapsed := time.Since(round.DealtAt); elapsed < time.Duration(cfg.TimeLimitSec+int(round.ExtendSec))*time.Second {
+	if elapsed := time.Since(round.DealtAt); elapsed < time.Duration(roundBaseWindow(round)+round.ExtendSec)*time.Second {
 		fail(w, http.StatusBadRequest, "time not up yet")
 		return
 	}
@@ -775,7 +818,6 @@ func (a *API) extendRound(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	cfg, _ := game.Config(game.Mode(updated.Mode))
 	fresh, err := a.Store.PlayerByToken(bearerToken(r))
 	if err != nil {
 		fresh = p
@@ -784,7 +826,7 @@ func (a *API) extendRound(w http.ResponseWriter, r *http.Request) {
 	a.notifyPlayer(fresh)
 	ok(w, map[string]any{
 		"roundId":      updated.ID,
-		"timeLimit":    cfg.TimeLimitSec + int(updated.ExtendSec),
+		"timeLimit":    roundBaseWindow(updated) + updated.ExtendSec,
 		"extraSeconds": updated.ExtendSec,
 		"player":       a.toPlayerJSON(fresh),
 	})

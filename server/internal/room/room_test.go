@@ -1057,3 +1057,59 @@ func TestHostGraceExpiryEndsStandingMatchWithPodium(t *testing.T) {
 		t.Fatal("room still open after the grace expired")
 	}
 }
+
+func TestAwardCallbackCarriesGuestFlag(t *testing.T) {
+	// every round winner reports its seat to the award callback: signed-in
+	// seats with guest=false, anonymous seats with guest=true (score-only
+	// banking) — both carrying their dbID
+	type awardCall struct {
+		dbID  string
+		guest bool
+	}
+	calls := make(chan awardCall, 4)
+	hub := NewHub(func(dbPlayerID string, guest bool, _ game.Mode, _ int64) []Unlock {
+		calls <- awardCall{dbID: dbPlayerID, guest: guest}
+		return nil
+	})
+	rm, hostKey, err := hub.Create(Config{Mode: game.Queen, Rounds: 12, HintQuota: 3, RegenQuota: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &fakeConn{}
+	rm.Join(Info{SessionID: "h", Name: "Host", HostKey: hostKey, DBID: "db-host"}, host)
+	guest := &fakeConn{}
+	rm.Join(Info{SessionID: "g", Name: "Guest", DBID: "db-guest", Guest: true}, guest)
+	if err := rm.Start("h"); err != nil {
+		t.Fatal(err)
+	}
+
+	rm.mu.Lock()
+	numbers := rm.sharedNumbers
+	rm.mu.Unlock()
+	sols := game.Solve(numbers)
+	if len(sols) == 0 {
+		t.Fatalf("no solution for %v", numbers)
+	}
+	if err := rm.Submit("g", sols[0].Trace); err != nil {
+		t.Fatalf("guest submit: %v", err)
+	}
+	if err := rm.Submit("h", sols[0].Trace); err != nil {
+		t.Fatalf("host submit: %v", err)
+	}
+
+	got := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case c := <-calls:
+			got[c.dbID] = c.guest
+		case <-time.After(2 * time.Second):
+			t.Fatalf("award callback fired %d times, want 2", i)
+		}
+	}
+	if got["db-host"] != false {
+		t.Fatalf("signed-in seat guest flag = %v, want false", got["db-host"])
+	}
+	if got["db-guest"] != true {
+		t.Fatalf("guest seat guest flag = %v, want true", got["db-guest"])
+	}
+}

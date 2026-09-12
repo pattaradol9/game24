@@ -48,7 +48,7 @@ func TestGuestFlow(t *testing.T) {
 
 func TestAwardEXPAndLeaderboard(t *testing.T) {
 	s := openTest(t)
-	p, _, err := s.CreateGuest("guest")
+	p, gtok, err := s.CreateGuest("guest")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,13 +57,10 @@ func TestAwardEXPAndLeaderboard(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// guest wins hands but must never appear on the board
-	st, _, err := s.AwardEXP(p.ID, "queen", 100, true)
-	if err != nil {
+	// guest wins hands through the score-only path and ranks on the board
+	// like everyone else — but banks no EXP, coins or per-mode stats
+	if err := s.RecordScore(p.ID, "queen", 100); err != nil {
 		t.Fatal(err)
-	}
-	if st.Exp != 100 || st.CurrentStreak != 1 {
-		t.Fatalf("guest stat = %+v", st)
 	}
 
 	// google player wins two hands then skips one; the board ranks the BEST
@@ -81,14 +78,17 @@ func TestAwardEXPAndLeaderboard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(board) != 1 {
-		t.Fatalf("board has %d rows, want 1 (guest hidden)", len(board))
+	if len(board) != 2 {
+		t.Fatalf("board has %d rows, want 2 (guest included)", len(board))
 	}
-	row := board[0]
-	if row.PlayerID != gp.ID || row.Score != 150 || row.HandsSolved != 2 || row.Nickname != "A" {
+	if row := board[0]; row.PlayerID != gp.ID || row.Score != 150 || row.HandsSolved != 2 || row.Nickname != "A" {
 		t.Fatalf("row = %+v", row)
 	}
+	if row := board[1]; row.PlayerID != p.ID || row.Score != 100 || row.HandsSolved != 1 || row.Nickname != "guest" {
+		t.Fatalf("guest row = %+v", row)
+	}
 
+	// the google player's progression is untouched by the guest's row
 	after, err := s.PlayerByToken(tok)
 	if err != nil {
 		t.Fatal(err)
@@ -99,6 +99,15 @@ func TestAwardEXPAndLeaderboard(t *testing.T) {
 	qs := after.Stats["queen"]
 	if qs.CurrentStreak != 0 || qs.BestStreak != 2 || qs.HandsSkipped != 1 {
 		t.Fatalf("queen stat = %+v", qs)
+	}
+
+	// the guest banked no progression: score ledger only
+	g, err := s.PlayerByToken(gtok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.TotalExp != 0 || g.TotalCoins != 0 || len(g.Stats) != 0 {
+		t.Fatalf("guest progression = %+v, want empty", g)
 	}
 }
 
@@ -230,5 +239,79 @@ func TestPIIEncryptedAtRest(t *testing.T) {
 	}
 	if _, err := s.cr.Decrypt(raw, "players.email"); err != nil || s.cr == nil {
 		t.Fatalf("decrypt failed: %v", err)
+	}
+}
+
+func TestScoreLeaderboardHidesZeroScores(t *testing.T) {
+	s := openTest(t)
+	onlyZero, _, err := s.CreateGuest("OnlyZero")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasZero, _, err := s.CreateGuest("HasZero")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// a hand that scored 0 (legacy rows) hides its player from the board…
+	if err := s.RecordScore(onlyZero.ID, "queen", 0); err != nil {
+		t.Fatal(err)
+	}
+	// …unless a later hand outranks it: the 0 row still counts as a solved
+	// hand, but the high score is what decides visibility
+	if err := s.RecordScore(hasZero.ID, "queen", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordScore(hasZero.ID, "queen", 40); err != nil {
+		t.Fatal(err)
+	}
+
+	board, err := s.ScoreLeaderboard("queen", false, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(board) != 1 || board[0].PlayerID != hasZero.ID {
+		t.Fatalf("board = %+v, want only HasZero", board)
+	}
+	if board[0].Score != 40 || board[0].HandsSolved != 2 {
+		t.Fatalf("row = %+v, want score 40 over 2 hands", board[0])
+	}
+
+	// the weekly window applies the same rule
+	weekly, err := s.ScoreLeaderboard("queen", true, 10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(weekly) != 1 || weekly[0].Score != 40 {
+		t.Fatalf("weekly board = %+v, want only the 40-point row", weekly)
+	}
+}
+
+func TestPlayerHighScores(t *testing.T) {
+	s := openTest(t)
+	p, _, err := s.CreateGuest("HS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rec := range []struct {
+		mode   string
+		points int64
+	}{
+		{"queen", 100}, {"queen", 150}, {"ace", 30}, {"jack", 0},
+	} {
+		if err := s.RecordScore(p.ID, rec.mode, rec.points); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hs, err := s.PlayerHighScores(p.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hs["queen"] != 150 || hs["ace"] != 30 {
+		t.Fatalf("high scores = %v, want queen 150 / ace 30", hs)
+	}
+	// a mode whose only row scored 0 is absent, like a mode never played
+	if _, ok := hs["jack"]; ok {
+		t.Fatalf("jack = %v, want absent", hs["jack"])
 	}
 }

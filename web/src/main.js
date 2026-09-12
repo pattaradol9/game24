@@ -1,18 +1,24 @@
 import { createApp } from 'vue'
 import { createRouter, createWebHistory } from 'vue-router'
 import App from './App.vue'
+import Home from './views/Home.vue'
+import './fonts.css'
 import './style.css'
 import './skins.css'
 import { restoreSession } from './auth.js'
 import { initRealtime } from './realtime.js'
 import { applySeo } from './seo.js'
+import { registerSW } from 'virtual:pwa-register'
 
 const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
+      // The landing page ships inside the entry bundle: it is the first
+      // thing almost every visit renders, so mounting it must not wait on
+      // a second chunk round trip.
       path: '/',
-      component: () => import('./views/Home.vue'),
+      component: Home,
       meta: {
         seo: {
           title: { th: '24 Game — รวมเลขให้ได้ 24!', en: '24 Game — Combine 4 cards into 24!' },
@@ -144,6 +150,18 @@ async function boot() {
   // live profile push: admin adjustments land without a refresh
   initRealtime()
   createApp(App).use(router).mount('#app')
+
+  // The service worker is offline plumbing, not content: register it once
+  // the page has loaded and the browser is idle so it never competes with
+  // first paint for the main thread or the network.
+  if ('serviceWorker' in navigator) {
+    const kick = () => {
+      const ric = window.requestIdleCallback || ((cb) => setTimeout(cb, 500))
+      ric(() => registerSW(), { timeout: 5000 })
+    }
+    if (document.readyState === 'complete') kick()
+    else addEventListener('load', kick, { once: true })
+  }
 }
 
 boot()

@@ -263,13 +263,22 @@ func adminActorID(t *testing.T, mux *chi.Mux, token string) string {
 }
 
 func TestAdminCoinsAndAchievements(t *testing.T) {
-	_, mux, adminToken := newAdminTestAPI(t)
+	api, mux, adminToken := newAdminTestAPI(t)
 
-	code, res := post(t, mux, "/api/v1/players", map[string]string{"nickname": "Coiny"}, "")
+	// guests sit outside the progression system: a grant to one is refused
+	code, res := post(t, mux, "/api/v1/players", map[string]string{"nickname": "Guesty"}, "")
 	if code != 200 {
-		t.Fatalf("create player: %d %v", code, res)
+		t.Fatalf("create guest: %d %v", code, res)
 	}
-	playerID := data(res)["player"].(map[string]any)["id"].(string)
+	guestID := data(res)["player"].(map[string]any)["id"].(string)
+	if code, res = doJSON(t, mux, "POST", "/api/v1/admin/players/"+guestID+"/achievements/grant",
+		map[string]any{"id": "solve-25"}, adminToken); code != 400 {
+		t.Fatalf("grant to guest should 400, got %d %v", code, res)
+	}
+
+	// the economy mechanics exercise on a signed-in google player
+	token := googlePlayerToken(t, api, "coiny")
+	playerID := playerID(t, api, token)
 	base := "/api/v1/admin/players/" + playerID
 
 	// coin set lands on the player; negative values are rejected

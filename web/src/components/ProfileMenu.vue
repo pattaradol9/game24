@@ -5,6 +5,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from '../i18n/index.js'
 import { currentPlayer, clearSession } from '../auth.js'
 import { levelProgress, tierName } from '../core/progress.js'
+import { MODES } from '../modes.js'
 import { sfx } from '../audio.js'
 import GoogleSignIn from './GoogleSignIn.vue'
 import AnimatedIcon from './AnimatedIcon.vue'
@@ -13,6 +14,7 @@ import Icon from './Icon.vue'
 import PlayerChip from './PlayerChip.vue'
 import ProfileHalo from './ProfileHalo.vue'
 import RenameModal from './RenameModal.vue'
+import Suit from './Suit.vue'
 import TierBadge from './TierBadge.vue'
 import TierAvatar from './TierAvatar.vue'
 
@@ -48,6 +50,11 @@ const pct = computed(() => {
   if (!p || !p.forNext) return 100
   return Math.min(100, Math.round((p.into / p.forNext) * 100))
 })
+// the per-mode high scores the leaderboard ranks; the block stays hidden
+// until a hand actually scored, guests included — they rank on the board too
+const scoreModes = computed(() =>
+  MODES.filter((m) => (player.value?.highScores?.[m.id] ?? 0) > 0)
+)
 const fmt = (n) => n.toLocaleString('en-US')
 
 function toggle() {
@@ -131,7 +138,7 @@ function onDeleted() {
               :name="player.nickname"
               :size="62"
             />
-            <span class="lv-chip">Lv.{{ player.level }}</span>
+            <span v-if="!player.isGuest" class="lv-chip">Lv.{{ player.level }}</span>
           </div>
           <b class="nick">{{ player.nickname }}</b>
           <div class="meta-row">
@@ -140,7 +147,9 @@ function onDeleted() {
           </div>
         </div>
 
-        <div class="stats">
+        <!-- the level ladder is signed-in territory: guests sit outside it,
+             so the whole stats block (level row, bar, EXP, coins) stays hidden -->
+        <div v-if="!player.isGuest" class="stats">
           <div class="lv-row">
             <span class="lv-now">Lv.{{ player.level }}</span>
             <span class="pct">{{ pct }}%</span>
@@ -153,9 +162,25 @@ function onDeleted() {
             <span>{{ prog ? `${fmt(prog.into)} / ${fmt(prog.forNext)}` : '—' }}</span>
             <span class="total">EXP {{ fmt(player.totalExp) }}</span>
           </div>
-          <div v-if="!player.isGuest" class="statrow">
+          <div class="statrow">
             <span class="coin-label"><Icon name="coin" :size="17" />{{ t('coins') }}</span>
             <span class="total num">{{ fmt(player.totalCoins ?? 0) }}</span>
+          </div>
+        </div>
+
+        <!-- the leaderboard figure, per mode: shown for every player with a
+             scored hand, guests included — it sits outside the level block
+             because guests have no ladder to stand on -->
+        <div v-if="scoreModes.length" class="scores">
+          <div class="scores-head">
+            <Icon name="crown" :size="13" />
+            <span>{{ t('highScore') }}</span>
+          </div>
+          <div class="score-grid">
+            <div v-for="m in scoreModes" :key="m.id" class="score-cell">
+              <Suit :name="m.suit" :size="12" />
+              <span class="num">{{ fmt(player.highScores[m.id] ?? 0) }}</span>
+            </div>
           </div>
         </div>
 
@@ -246,7 +271,8 @@ function onDeleted() {
   position: absolute;
   right: 0;
   top: calc(100% + 8px);
-  width: 300px;
+  /* wide enough for the 312px Google sign-in button inside .actions/.gsi-wrap */
+  width: 340px;
   max-width: calc(100vw - 24px);
   border-radius: var(--r-lg);
   border: 1px solid var(--line);
@@ -423,6 +449,42 @@ function onDeleted() {
 }
 .total { color: var(--text-dim); }
 .coin-label { display: inline-flex; align-items: center; gap: 5px; color: var(--accent); }
+
+/* ---------- high scores ---------- */
+.scores {
+  margin: 8px 16px 0;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  padding: 9px 12px 10px;
+}
+.scores-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--text-mute);
+  margin-bottom: 7px;
+}
+.scores-head svg { color: var(--accent); }
+.score-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.score-cell {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  background: var(--surface-3);
+  border-radius: var(--r-sm);
+  padding: 6px 9px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.score-cell .num { margin-left: auto; color: var(--text-dim); }
 
 /* ---------- actions ---------- */
 .actions {

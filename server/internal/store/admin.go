@@ -469,6 +469,12 @@ func syncTotalExp(tx *sql.Tx, playerID string) error {
 // already holds.
 var ErrAlreadyUnlocked = errors.New("store: achievement already unlocked")
 
+// ErrGuestPlayer is returned when an achievement is granted to a guest.
+// Guests sit outside the progression system entirely — no EXP, no coins,
+// no unlocks — so a grant to one is refused instead of paying rewards
+// onto an ephemeral account.
+var ErrGuestPlayer = errors.New("store: guests cannot hold achievements")
+
 // SetPlayerCoins overwrites the player's coin balance with an absolute
 // value (negative input clamps at zero). Admin override only — normal
 // payouts go through AwardSolve; coin achievements re-evaluate on the
@@ -510,6 +516,16 @@ func (s *Store) GrantAchievement(actor, playerID, achID string) (Player, error) 
 	def, ok := achv.ByID(achID)
 	if !ok {
 		return Player{}, ErrNotFound
+	}
+	var guest int
+	if err := s.db.QueryRow(`SELECT is_guest FROM players WHERE id = ?`, playerID).Scan(&guest); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Player{}, ErrNotFound
+		}
+		return Player{}, err
+	}
+	if guest == 1 {
+		return Player{}, ErrGuestPlayer
 	}
 	tx, err := s.db.Begin()
 	if err != nil {

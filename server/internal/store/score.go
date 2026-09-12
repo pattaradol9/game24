@@ -52,11 +52,53 @@ type ScoreRow struct {
 	TierOverride string
 }
 
+// RecordScore banks one solved hand's raw points into the score ledger — and
+// nothing else. It is the anonymous-player path behind the leaderboard:
+// guests rank exactly like signed-in players, while EXP/coins, per-mode
+// stats and achievements stay gated behind Google sign-in.
+func (s *Store) RecordScore(playerID, mode string, points int64) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO player_scores (player_id, mode, points) VALUES (?,?,?)`,
+		playerID, mode, points); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// PlayerHighScores maps each mode to the player's best single hand there —
+// the same figure the leaderboard ranks. Only modes with a positive high
+// score come back; a mode never played (or never scoring) is absent.
+func (s *Store) PlayerHighScores(playerID string) (map[string]int64, error) {
+	rows, err := s.db.Query(`SELECT mode, MAX(points) FROM player_scores WHERE player_id = ? GROUP BY mode`, playerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int64{}
+	for rows.Next() {
+		var mode string
+		var best int64
+		if err := rows.Scan(&mode, &best); err != nil {
+			return nil, err
+		}
+		if best > 0 {
+			out[mode] = best
+		}
+	}
+	return out, rows.Err()
+}
+
 // ScoreLeaderboard returns the ranked list for one mode, aggregated from the
 // score ledger. Each entry's Score is that player's best single hand (high
 // score) inside the window: weekly=true ranks hands solved in the current
 // ISO week (since Monday 00:00 UTC), false ranks all time. Ties break by
-// hands solved, then best streak. Guests and banned players never appear.
+// hands solved, then best streak. Anonymous (guest) players rank like
+// everyone else; banned players never appear, and neither does a player
+// whose best hand in the window scored 0.
 func (s *Store) ScoreLeaderboard(mode string, weekly bool, limit, offset int) ([]ScoreRow, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
@@ -74,8 +116,9 @@ func (s *Store) ScoreLeaderboard(mode string, weekly bool, limit, offset int) ([
 		q += ` AND sc.awarded_at >= ?`
 		args = append(args, WeekStartUTC(time.Now()).Format(sqliteTimeLayout))
 	}
-	q += ` AND p.is_guest = 0 AND p.banned = 0
+	q += ` AND p.banned = 0
 		GROUP BY p.id
+		HAVING MAX(sc.points) > 0
 		ORDER BY score DESC, hands DESC, best_streak DESC
 		LIMIT ? OFFSET ?`
 	args = append(args, limit, offset)

@@ -20,7 +20,8 @@ type Conn interface {
 type Info struct {
 	SessionID string // unique per connection
 	Name      string
-	DBID      string // store player id for signed-in users, "" for guests
+	DBID      string // store player id for every registered seat (guests included)
+	Guest     bool   // anonymous seat: the award banks score only, never EXP/coins
 	Level     int64
 	Tier      string
 	HostKey   string // matches the room secret to claim host
@@ -31,6 +32,7 @@ type player struct {
 	id              string
 	name            string
 	dbID            string
+	guest           bool
 	level           int64
 	tier            string
 	score           int64
@@ -84,7 +86,7 @@ type playerView struct {
 type Room struct {
 	code    string
 	cfg     Config
-	award   AwardEXP
+	award   AwardSolve
 	hostKey string
 
 	mu                   sync.Mutex
@@ -120,7 +122,7 @@ const (
 	maxPlayers = 10
 )
 
-func newRoom(code, hostKey string, cfg Config, award AwardEXP) *Room {
+func newRoom(code, hostKey string, cfg Config, award AwardSolve) *Room {
 	return &Room{
 		code:    code,
 		cfg:     cfg,
@@ -217,12 +219,12 @@ func (r *Room) Join(info Info, conn Conn) (string, error) {
 		p.conn = conn
 		p.absent = false
 		p.absentSeq++
-		p.name, p.dbID, p.level, p.tier = info.Name, info.DBID, info.Level, info.Tier
+		p.name, p.dbID, p.guest, p.level, p.tier = info.Name, info.DBID, info.Guest, info.Level, info.Tier
 		isHostSeat = p.id == r.hostID
 	} else {
 		p = &player{
 			id: info.SessionID, name: info.Name, dbID: info.DBID,
-			level: info.Level, tier: info.Tier, conn: conn,
+			guest: info.Guest, level: info.Level, tier: info.Tier, conn: conn,
 			hintsLeft: r.cfg.HintQuota, extendsLeft: r.cfg.ExtendQuota,
 			regensLeft: r.cfg.RegenQuota,
 			resumeKey:  newSecret(24),
@@ -733,9 +735,9 @@ func (r *Room) Submit(sessionID string, steps []game.Step) error {
 	p.solveOrder = r.solvedCount
 
 	if p.dbID != "" && r.award != nil {
-		dbID, winner, mode := p.dbID, p.id, r.cfg.Mode
+		dbID, guest, winner, mode := p.dbID, p.guest, p.id, r.cfg.Mode
 		go func() {
-			unlocks := r.award(dbID, mode, points)
+			unlocks := r.award(dbID, guest, mode, points)
 			if len(unlocks) == 0 {
 				return
 			}
@@ -946,7 +948,7 @@ func (r *Room) viewLocked(p *player) playerView {
 	solved := r.roundNo > 0 && p.solvedRoundNo == r.roundNo
 	timedOut := r.roundNo > 0 && p.timedOutRoundNo == r.roundNo
 	return playerView{
-		ID: p.id, Name: p.name, Guest: p.dbID == "", Level: p.level, Tier: p.tier,
+		ID: p.id, Name: p.name, Guest: p.guest, Level: p.level, Tier: p.tier,
 		Score: p.score, Wins: p.wins, HintsLeft: p.hintsLeft,
 		ExtendsLeft: p.extendsLeft, RegensLeft: p.regensLeft,
 		Solved: solved, SolveOrder: p.solveOrder, TimedOut: timedOut,

@@ -18,6 +18,7 @@ import Icon from '../components/Icon.vue'
 import ModeBadge from '../components/ModeBadge.vue'
 import PlayerChip from '../components/PlayerChip.vue'
 import { currentPlayer } from '../auth.js'
+import { ladderDropPct, LADDER_MIN_TIME } from '../modes.js'
 import BuffBar from '../components/BuffBar.vue'
 
 const { t, lang } = useI18n()
@@ -25,6 +26,7 @@ const route = useRoute()
 const router = useRouter()
 const game = useGame()
 const { phase, mode, hand, remaining, timeLimit, hintLeft, hintCard, result, busy, paused, combo, extendOffer, extendBusy, extendUsed, skipUsed, addTime, sessionScore, sessionExp, sessionCoins, restored } = game
+const { runMode, handNo, runBaseTime, ladderStep } = game
 
 const player = currentPlayer
 const toast = ref('')
@@ -74,6 +76,24 @@ const wrongFlash = ref(false)
 const showCountdown = ref(false)
 const dealing = ref(false)
 const streak = computed(() => player.value?.perMode?.[mode.value]?.currentStreak ?? 0)
+
+// the difficulty ladder's HUD readout: which hand of the run this is plus
+// how far the countdown has shrunk off the run's base window
+const ladderLabel = computed(() => {
+  if (phase.value !== 'playing' && phase.value !== 'result') return ''
+  const drop = ladderDropPct(timeLimit.value, runBaseTime.value)
+  return t('roundOf', { n: handNo.value }) + (drop > 0 ? ` · −${drop}%` : '')
+})
+
+// each climbed rung announces itself once: a new puzzle mode, a shrunken
+// clock, or the ladder's "H" floor
+watch(ladderStep, (s) => {
+  if (!s) return
+  if (s.timeLimit <= LADDER_MIN_TIME && s.fromTime > LADDER_MIN_TIME) say(t('ladderFloor', { time: s.timeLimit }), 3600)
+  else if (s.to !== s.from) say(t('ladderUp', { mode: t(s.to), time: s.timeLimit }), 3600)
+  else say(t('ladderTime', { time: s.timeLimit }), 3000)
+  game.ladderStep.value = null
+})
 
 // Time Extension stock for the "time over?" dialog — the player JSON's
 // inventory rides along every profile fetch
@@ -272,7 +292,7 @@ watch(() => game.hintCard.value, (h) => { if (h) say(t('bubbleHint'), 3400) })
       <button class="btn back" @click="onExit">
         <Icon name="back" :size="18" /><span class="back-label">{{ t('exit') }}</span>
       </button>
-      <ModeBadge :mode="mode" />
+      <ModeBadge :mode="mode" :round="ladderLabel" />
       <div class="spacer" />
       <BuffBar class="solo-buffs" />
       <StreakFlame :streak="streak" />

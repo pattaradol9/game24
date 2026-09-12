@@ -16,7 +16,7 @@
   /* text */
   --text: #eceff6;
   --text-dim: #9aa4ba;
-  --text-mute: #626d85;
+  --text-mute: #7e89ab; /* ≥4.5:1 on every surface it sits on (a11y) */
 
   /* one accent + semantics */
   --accent: #f6b73c;

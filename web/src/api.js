@@ -30,8 +30,10 @@ export const api = {
   me: (token) => request('/me', { token }),
   renameMe: (nickname, token) => request('/me/rename', { method: 'POST', body: { nickname }, token }),
   deleteMe: (confirm, token) => request('/me', { method: 'DELETE', body: { confirm }, token }),
-  createRound: (mode, token, sessionId) =>
-    request('/rounds', { method: 'POST', body: { mode, sessionId }, token }),
+  // stage = the solo ladder rung (hands dealt / 10); the server resolves
+  // the rung's puzzle mode and shrunk countdown from it
+  createRound: (mode, token, sessionId, stage = 0) =>
+    request('/rounds', { method: 'POST', body: { mode, sessionId, stage }, token }),
   submitRound: (roundId, steps, token) =>
     request(`/rounds/${roundId}/submit`, { method: 'POST', body: { steps }, token }),
   skipRound: (roundId, token) => request(`/rounds/${roundId}/skip`, { method: 'POST', body: {}, token }),

@@ -55,9 +55,16 @@ func main() {
 	}
 	defer db.Close()
 
-	// 3. multiplayer hub: round winners bank EXP + coins, achievement
-	// unlocks are pushed back to the winner's socket.
-	hub := room.NewHub(func(dbPlayerID string, mode game.Mode, points int64) []room.Unlock {
+	// 3. multiplayer hub: round winners bank EXP + coins (score only for
+	// anonymous winners — guests rank on the leaderboard, nothing else),
+	// achievement unlocks are pushed back to the winner's socket.
+	hub := room.NewHub(func(dbPlayerID string, guest bool, mode game.Mode, points int64) []room.Unlock {
+		if guest {
+			if err := db.RecordScore(dbPlayerID, string(mode), points); err != nil {
+				log.Printf("record guest score: %v", err)
+			}
+			return nil
+		}
 		_, unlocked, err := db.AwardSolve(dbPlayerID, string(mode), points, true)
 		if err != nil {
 			log.Printf("award solve: %v", err)

@@ -35,24 +35,24 @@ export function toonGradient(THREE, steps = [118, 156, 192, 224, 255]) {
  * The thresholds are absolute (≈38fps down, ≈55fps up); the only case they get
  * wrong is a genuine 30Hz display, which settles at the floor and looks fine.
  */
-export function qualityGuard(renderer, { max = 2, min = 0.75, onChange } = {}) {
-  const cap = Math.min(window.devicePixelRatio || 1, max)
-  let dpr = cap
+export function qualityGuard(renderer, { max = 2, min = 0.75, dpr, onChange } = {}) {
+  const cap = Math.min((dpr ?? window.devicePixelRatio) || 1, max)
+  let ratio = cap
   let avg = 16
   let hold = 60 // ignore the first second: startup frames are always slow
-  renderer.setPixelRatio(dpr)
+  renderer.setPixelRatio(ratio)
   return {
-    get dpr() { return dpr },
+    get dpr() { return ratio },
     /** @param ms milliseconds since the previous rendered frame */
     sample(ms) {
       avg += (clamp(ms, 1, 40) - avg) * 0.05
       if (hold-- > 0) return
-      const want = avg > 26 ? dpr * 0.8 : avg < 18 ? dpr * 1.15 : dpr
+      const want = avg > 26 ? ratio * 0.8 : avg < 18 ? ratio * 1.15 : ratio
       const next = clamp(Math.round(want * 20) / 20, min, cap)
-      if (Math.abs(next - dpr) < 0.04) return
-      dpr = next
-      renderer.setPixelRatio(dpr)
-      onChange?.(dpr)
+      if (Math.abs(next - ratio) < 0.04) return
+      ratio = next
+      renderer.setPixelRatio(ratio)
+      onChange?.(ratio)
       hold = 90 // let the change settle before judging again
     },
   }

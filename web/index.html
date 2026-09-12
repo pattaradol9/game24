@@ -2,8 +2,16 @@
 <html lang="th">
   <head>
     <meta charset="UTF-8" />
+    <!-- Self-hosted Kanit (see src/fonts.css): preloading the hero weight
+         (600) and the body weight (400) keeps the first paints from
+         waiting on the font swap. -->
+    <link rel="preload" href="/fonts/kanit-600-thai.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/kanit-600-latin.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/kanit-400-thai.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/kanit-400-latin.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <!-- zoom stays available (accessibility); viewport-fit covers notched phones -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>24 Game — รวมเลขให้ได้ 24!</title>
     <meta name="description" content="เกมไพ่คณิตศาสตร์คลาสสิก จับไพ่ 4 ใบ ผสมด้วย + − × ÷ ให้ได้เลข 24 เล่นเดี่ยวเก็บ EXP ไต่ tier หรือสร้างห้องแข่งกับเพื่อนแบบเรียลไทม์ ฟรี ไม่ต้องสมัคร" />
     <meta name="keywords" content="24 game, เกม 24, เกมคณิตศาสตร์, math game, math puzzle, card game, เกมไพ่, ห้องเรียนคณิตศาสตร์" />
@@ -36,12 +44,6 @@
     <meta name="apple-mobile-web-app-title" content="24 Game" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
 
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
     <script src="https://accounts.google.com/gsi/client" async defer></script>
 
     <script type="application/ld+json">

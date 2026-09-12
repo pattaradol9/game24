@@ -7,6 +7,7 @@ import { useI18n } from '../i18n/index.js'
 import { api } from '../api.js'
 import { getToken } from '../auth.js'
 import Brand from '../components/Brand.vue'
+import GuestVeil from '../components/GuestVeil.vue'
 import Icon from '../components/Icon.vue'
 import ProfileMenu from '../components/ProfileMenu.vue'
 import SiteFooter from '../components/SiteFooter.vue'
@@ -67,6 +68,11 @@ async function load() {
   }
 }
 onMounted(load)
+
+// signing in from the veil lifts it and pulls the fresh unlocked/progress maps
+function onSignedIn() {
+  load()
+}
 </script>
 
 <template>
@@ -88,43 +94,47 @@ onMounted(load)
 
       <p v-if="error" class="err">{{ error }}</p>
 
-      <div v-if="loading" class="loading">…</div>
-      <div v-else class="grid">
-        <article
-          v-for="a in achievements"
-          :key="a.id"
-          class="ach"
-          :class="{ unlocked: isUnlocked(a) }"
-          :style="{ '--tc': tierColor(a.tier) }"
-        >
-          <div class="ach-head">
-            <span class="tier-badge">{{ t(tierKey(a.tier)) }}</span>
-            <span v-if="isUnlocked(a)" class="state on">
-              <Icon name="check" :size="12" />{{ t('unlocked') }}
-            </span>
-            <span v-else class="state">
-              <Icon name="lock" :size="12" />{{ t('locked') }}
-            </span>
-          </div>
+      <!-- guests see the catalog through GuestVeil's blur; signing in
+           lifts the veil and reloads the unlocked/progress maps -->
+      <GuestVeil :message="t('achSignInRequired')" @signed-in="onSignedIn">
+        <div v-if="loading" class="loading">…</div>
+        <div v-else class="grid">
+          <article
+            v-for="a in achievements"
+            :key="a.id"
+            class="ach"
+            :class="{ unlocked: isUnlocked(a) }"
+            :style="{ '--tc': tierColor(a.tier) }"
+          >
+            <div class="ach-head">
+              <span class="tier-badge">{{ t(tierKey(a.tier)) }}</span>
+              <span v-if="isUnlocked(a)" class="state on">
+                <Icon name="check" :size="12" />{{ t('unlocked') }}
+              </span>
+              <span v-else class="state">
+                <Icon name="lock" :size="12" />{{ t('locked') }}
+              </span>
+            </div>
 
-          <b class="ach-title">{{ bi(a.title) }}</b>
-          <p class="ach-desc">{{ bi(a.desc) }}</p>
+            <b class="ach-title">{{ bi(a.title) }}</b>
+            <p class="ach-desc">{{ bi(a.desc) }}</p>
 
-          <div v-if="isUnlocked(a)" class="when">
-            <Icon name="check" :size="12" />
-            <span>{{ fmtDate(unlocked[a.id]) }}</span>
-          </div>
-          <div v-else-if="a.target > 0" class="prog">
-            <span class="prog-track"><span class="prog-fill" :style="{ width: pctOf(a) + '%' }" /></span>
-            <span class="prog-num num">{{ fmt(currentOf(a)) }} / {{ fmt(a.target) }}</span>
-          </div>
+            <div v-if="isUnlocked(a)" class="when">
+              <Icon name="check" :size="12" />
+              <span>{{ fmtDate(unlocked[a.id]) }}</span>
+            </div>
+            <div v-else-if="a.target > 0" class="prog">
+              <span class="prog-track"><span class="prog-fill" :style="{ width: pctOf(a) + '%' }" /></span>
+              <span class="prog-num num">{{ fmt(currentOf(a)) }} / {{ fmt(a.target) }}</span>
+            </div>
 
           <div class="rewards">
             <span class="chip reward num">+{{ fmt(a.expReward) }} EXP</span>
             <span class="chip reward coin num"><Icon name="coin" :size="16" />+{{ fmt(a.coinReward) }}</span>
           </div>
         </article>
-      </div>
+        </div>
+      </GuestVeil>
     </section>
 
     <SiteFooter />

@@ -196,15 +196,33 @@ func TestGuestRoundFlow(t *testing.T) {
 	if expr, _ := data(res)["expr"].(string); expr == "" {
 		t.Fatal("no expr returned")
 	}
+	// the submit's fresh profile carries the per-mode high score the
+	// leaderboard ranks
+	solved := data(res)["player"].(map[string]any)
+	hs, ok := solved["highScores"].(map[string]any)
+	if !ok {
+		t.Fatalf("no highScores in player json: %v", solved)
+	}
+	if v, ok := hs["queen"].(float64); !ok || v <= 0 {
+		t.Fatalf("queen high score = %v, want > 0", hs["queen"])
+	}
 
-	// 4. guest never reaches the leaderboard
+	// 4. the guest's solved hand ranks on the leaderboard (score ledger
+	// only: the player JSON above shows no exp/coins)
 	code, res = get(t, mux, "/api/v1/leaderboard?mode=queen", "")
 	if code != 200 {
 		t.Fatalf("leaderboard: %d", code)
 	}
 	entries := data(res)["entries"].([]any)
-	if len(entries) != 0 {
-		t.Fatalf("guest leaked to leaderboard: %v", entries)
+	if len(entries) != 1 {
+		t.Fatalf("board entries = %v, want the guest's row", entries)
+	}
+	entry := entries[0].(map[string]any)
+	if entry["nickname"] != "TestNick" {
+		t.Fatalf("board row = %v, want the guest", entry)
+	}
+	if pts, ok := entry["score"].(float64); !ok || pts <= 0 {
+		t.Fatalf("guest score = %v, want > 0", entry["score"])
 	}
 
 	// 5. hint quota enforcement on a fresh round

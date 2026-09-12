@@ -119,6 +119,7 @@ func (s *Store) migrate() error {
 			elapsed_ms  INTEGER NOT NULL DEFAULT 0,
 			hints_used  INTEGER NOT NULL DEFAULT 0,
 			skip_used   INTEGER NOT NULL DEFAULT 0,
+			time_limit  INTEGER NOT NULL DEFAULT 0,
 			dealt_at    TEXT NOT NULL DEFAULT (datetime('now')),
 			finished_at TEXT
 		)`,
@@ -178,6 +179,9 @@ func (s *Store) migrate() error {
 		// 1 = the hand was folded with a skip-pass item (the once-per-session
 		// skip rule keys off this flag)
 		`ALTER TABLE rounds ADD COLUMN skip_used INTEGER NOT NULL DEFAULT 0`,
+		// the hand's base countdown in seconds (0 = use the mode default).
+		// Solo ladder rounds carry their stage-shrunk window here
+		`ALTER TABLE rounds ADD COLUMN time_limit INTEGER NOT NULL DEFAULT 0`,
 		// coin economy + achievements + skins
 		`ALTER TABLE players ADD COLUMN total_coins INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE players ADD COLUMN total_wins INTEGER NOT NULL DEFAULT 0`,

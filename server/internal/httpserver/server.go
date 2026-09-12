@@ -58,7 +58,16 @@ func New(cfg config.Config, api *handler.API, webFS fs.FS) *Server {
 	r.Get("/sitemap.xml", sitemapHandler(cfg.PublicBaseURL))
 
 	if webFS != nil {
-		r.NotFound(spaHandler(webFS, cfg.PublicBaseURL))
+		// Text assets dominate the page weight (the JS/CSS bundles ship
+		// unminifiable content several hundred KB raw), so compress them on
+		// the fly. Only the static path is compressed — websocket upgrades
+		// and API responses keep their exact framing.
+		compressible := []string{
+			"text/html", "text/css", "text/plain",
+			"text/javascript", "application/javascript", "application/x-javascript",
+			"application/json", "application/manifest+json", "image/svg+xml",
+		}
+		r.NotFound(middleware.Compress(5, compressible...)(spaHandler(webFS, cfg.PublicBaseURL)).ServeHTTP)
 	}
 
 	return &Server{

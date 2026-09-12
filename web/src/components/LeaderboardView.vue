@@ -24,7 +24,10 @@ const period = ref('weekly')
 const entries = ref([])
 const loading = ref(false)
 
+let initial = true // first fetch waits for the page to settle, see onMounted
+
 async function load() {
+  initial = false
   loading.value = true
   try {
     const data = await api.leaderboard(mode.value, period.value)
@@ -34,7 +37,18 @@ async function load() {
   }
 }
 
-onMounted(load)
+// The board sits below the fold on phones, so the first fetch waits until
+// the page has loaded and the browser is idle — it must never compete with
+// first paint for bandwidth. Tab presses or sign-ins before the idle slot
+// simply load right away.
+onMounted(() => {
+  const kick = () => {
+    const ric = window.requestIdleCallback || ((cb) => setTimeout(cb, 300))
+    ric(() => { if (initial) load() }, { timeout: 2000 })
+  }
+  if (document.readyState === 'complete') kick()
+  else addEventListener('load', kick, { once: true })
+})
 watch([mode, period], load)
 // a rename (or Google sign-in) from the header profile menu must show up
 // here without a page reload

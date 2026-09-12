@@ -52,9 +52,11 @@ type Unlock struct {
 	CoinReward int64
 }
 
-// AwardEXP is called for signed-in round winners: (dbPlayerID, mode, points).
-// It returns the achievements unlocked by the win, if any.
-type AwardEXP func(dbPlayerID string, mode game.Mode, points int64) []Unlock
+// AwardSolve is called for every round winner: (dbPlayerID, guest, mode,
+// points). The guest flag lets the caller bank anonymous winners' score-only
+// payout — guests rank on the leaderboard, never on EXP/coins. It returns
+// the achievements unlocked by the win, if any.
+type AwardSolve func(dbPlayerID string, guest bool, mode game.Mode, points int64) []Unlock
 
 // removeGrace keeps an emptied room around briefly so a page refresh —
 // which drops the websocket and rejoins a moment later — finds it alive.
@@ -77,10 +79,10 @@ type Hub struct {
 	rooms    map[string]*Room
 	removals map[string]*time.Timer
 	closes   map[string]*time.Timer
-	award    AwardEXP
+	award    AwardSolve
 }
 
-func NewHub(award AwardEXP) *Hub {
+func NewHub(award AwardSolve) *Hub {
 	return &Hub{rooms: map[string]*Room{}, award: award}
 }
 
